@@ -90,6 +90,22 @@ graph TD
     BootRec --> Config
 ```
 
+## 🔓 Device Rooting Guide
+
+> [!IMPORTANT]
+> **Root Access is Mandatory**  
+> HiBig Zero requires Superuser (Root) permissions via Magisk to communicate directly with MediaTek kernel sysfs nodes, uncap PPM frequency locks, dynamic hotplug CPU cores, and enforce boot rules.
+
+If your Bigme HiBreak is not yet rooted, follow the comprehensive step-by-step guide included in this repository:
+
+📖 **[Bigme B6 & HiBreak — Complete Rooting & Unbricking Guide](docs/ROOTING_GUIDE.md)**
+
+### Highlights from the Guide:
+* **Overcoming Single-Button Quirk:** Uses [`right9code/mtkclient`](https://github.com/right9code/mtkclient) with hardware watchdog auto-reboot (`--reboot`) to bypass the physical button limitation.
+* **Full Partition Backup:** How to safely dump all 48 partitions before flashing.
+* **Magisk Patching:** Extracting `boot_a.bin`, patching via Magisk Manager, and flashing back safely.
+* **One-Command Unbricking:** Instant recovery to stock firmware if anything goes wrong.
+
 ---
 
 ## 📥 Installation
@@ -97,7 +113,7 @@ graph TD
 ### Requirements
 * **Device:** Bigme HiBreak B6 (B&W or Color)
 * **OS:** Android 14 (EEA / Global)
-* **Root:** Magisk v26+ installed with root permissions granted
+* **Root:** Magisk v26+ installed (see [Rooting Guide](docs/ROOTING_GUIDE.md))
 
 ### Steps
 1. Download the latest APK from the [Releases](releases/) folder:

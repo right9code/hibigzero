@@ -14,6 +14,23 @@ Stock Bigme firmware suffers from severe active and standby battery drain caused
 
 ---
 
+## 🎨 User Interface Highlights
+
+HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
+
+* **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale instead of a hardcoded width-based scaler.
+* **Density-independent layout** — all padding, margins, and dividers use dp, so the UI scales correctly across screen densities.
+* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.0.0`), and author (`by right9code`).
+* **Clean tab bar** — tabs are visually separated from the banner and from each other, use fixed labels, and mark the active tab with an underline indicator instead of a `>>` prefix.
+* **Collapsible sections** — every section header (`HARDWARE`, `DEBLOAT`, `NETWORK`, `POWER`, `PACKAGE MANAGER`, and the Battery sections) can be tapped to collapse or expand its body.
+* **Package Manager clarity** — the second tab is now `PACKAGE MANAGER` with a `FREEZE, UNFREEZE, OR RESTRICT` description. Each app row shows the name, package, and a plain-language status line (`Not frozen | background: allowed | doze optimized | usage: ...`) with `FREEZE`/`UNFREEZE` and `OPTIONS` stacked on the right.
+* **Filter and sort dropdowns** — the six cryptic filter chips (`RSTR`, `PROT`) were replaced by a single `FILTER:` selector with readable options, alongside the existing `SORT:` selector.
+* **Removed non-essential controls** — `PAGE UP`/`PAGE DOWN` and the bulk `FREEZE ALL`/`UNFREEZE ALL`/`RESTRICT USR` shortcuts were removed; per-app actions remain in each row.
+* **Strict 1-bit monochrome styling** — all buttons, the search field, and the tab bar use explicit black/white bordered drawables, eliminating the system grey Material backgrounds.
+* **E-ink friendly glyphs** — emoji and pictographs in menus and buttons were replaced with ASCII-safe labels for predictable rendering.
+
+---
+
 ## 🔋 Measured Impact & Benchmarks
 
 | Optimization Area | Stock Firmware Behavior | HiBig Zero Optimized | Real-World Impact |

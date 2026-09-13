@@ -8,12 +8,17 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.TypedValue;
+import android.view.GestureDetector;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.*;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -24,24 +29,60 @@ import java.util.Properties;
 public class MainActivity extends Activity {
     private Properties currentConfig;
     private LinearLayout contentContainer;
+    private ScrollView mainScrollView;
     private int activeTab = 0;
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private TextView headerBatteryView;
     private Runnable headerBatteryUpdater;
     private Runnable diagBatteryUpdater;
     private boolean diagBatteryRunning = false;
+    private boolean diagBatteryPaused = false;
     private String debloatFilter = "ALL";
     private int debloatSortMode = 0;
     private String debloatSearch = "";
+    private Runnable searchDebounceRunnable = null;
     private List<AppItem> cachedAppItems = null;
     private Button tabSysBtn, tabAppsBtn, tabDiagBtn;
+    private View tabSysIndicator, tabAppsIndicator, tabDiagIndicator;
+
+    // Helper: apply system-scaled sp text size (respects user font scale)
+    private void setSp(TextView tv, float sp) {
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp);
+    }
+
+    // Helper: dp to pixel converter
+    private int dpToPx(int dp) {
+        return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    // Helper: force strict 1-bit button styling (no system grey drawable)
+    private void styleEinkButton(Button btn, boolean inverted) {
+        btn.setBackground(createEinkDrawable(
+            inverted ? Color.BLACK : Color.WHITE,
+            Color.BLACK, inverted ? 0 : 2, 0));
+        btn.setTextColor(inverted ? Color.WHITE : Color.BLACK);
+    }
+
+    // Helper: High-contrast 1-bit E-ink drawables with crisp borders
+    private GradientDrawable createEinkDrawable(int bgColor, int strokeColor, int strokeWidthDp, int cornerRadiusDp) {
+        GradientDrawable gd = new GradientDrawable();
+        gd.setColor(bgColor);
+        if (strokeWidthDp > 0) {
+            int strokePx = Math.max(1, dpToPx(strokeWidthDp));
+            gd.setStroke(strokePx, strokeColor);
+        }
+        if (cornerRadiusDp > 0) {
+            gd.setCornerRadius(dpToPx(cornerRadiusDp));
+        }
+        return gd;
+    }
 
     static class AppItem {
         final ApplicationInfo app;
         final String label;
         final String pkg;
         final boolean isProt;
-        final boolean isEnabled;
+        boolean isEnabled;
         final boolean isSystem;
         boolean isRestricted;
         int standbyBucket;
@@ -62,6 +103,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
         currentConfig = ConfigManager.loadConfig();
         if (getIntent() != null) activeTab = getIntent().getIntExtra("tab", 0);
 
@@ -79,83 +121,106 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.WHITE);
 
-        // ── Header (inverted: white on black) ──────────────────────────────
+        // ── Header (compact, responsive two-line status strip) ─────────────
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        header.setPadding(16, 12, 16, 8);
+        header.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
         header.setBackgroundColor(Color.BLACK);
 
         TextView title = new TextView(this);
-        title.setText("HIBIG ZERO");
-        title.setTextSize(22);
-        title.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        title.setText("HIBIG ZERO  v1.0.0");
+        setSp(title, 15);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(Color.WHITE);
         header.addView(title);
 
-        TextView title2 = new TextView(this);
-        title2.setText("ZERO-DRAIN MANAGER | right9code");
-        title2.setTextSize(13);
-        title2.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        title2.setTextColor(Color.WHITE);
-        header.addView(title2);
-
-        TextView sub = new TextView(this);
-        sub.setText("Bigme HiBreak | Helio P35 | Android 14");
-        sub.setTextSize(10);
-        sub.setTypeface(Typeface.MONOSPACE);
-        sub.setTextColor(Color.WHITE);
-        sub.setPadding(0, 4, 0, 0);
-        header.addView(sub);
+        TextView author = new TextView(this);
+        author.setText("by right9code");
+        setSp(author, 11);
+        author.setTypeface(Typeface.DEFAULT);
+        author.setTextColor(Color.WHITE);
+        author.setPadding(0, dpToPx(1), 0, 0);
+        header.addView(author);
 
         headerBatteryView = new TextView(this);
-        headerBatteryView.setText("BATTERY: reading...");
-        headerBatteryView.setTextSize(11);
-        headerBatteryView.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        headerBatteryView.setText("Battery: reading...");
+        setSp(headerBatteryView, 12);
+        headerBatteryView.setTypeface(Typeface.DEFAULT);
         headerBatteryView.setTextColor(Color.WHITE);
-        headerBatteryView.setPadding(0, 4, 0, 0);
+        headerBatteryView.setPadding(0, dpToPx(2), 0, 0);
         header.addView(headerBatteryView);
 
         // Boot confirmation
         String lastBoot = ConfigManager.getLastBootTime();
         TextView bootTv = new TextView(this);
         bootTv.setText(lastBoot.isEmpty() ? "[!!] BOOT: not applied yet" : "[OK] BOOT: " + lastBoot);
-        bootTv.setTextSize(10);
-        bootTv.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        setSp(bootTv, 11);
+        bootTv.setTypeface(Typeface.DEFAULT);
         bootTv.setTextColor(Color.WHITE);
-        bootTv.setPadding(0, 4, 0, 0);
+        bootTv.setPadding(0, dpToPx(2), 0, 0);
         header.addView(bootTv);
 
         root.addView(header);
 
-        // ── Tab Bar ─────────────────────────────────────────────────────────
+        // ── Tab Bar (separated from banner and from each other) ──────────────
         LinearLayout tabBar = new LinearLayout(this);
         tabBar.setOrientation(LinearLayout.HORIZONTAL);
-        tabBar.setPadding(0, 0, 0, 0);
+        tabBar.setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
 
-        tabSysBtn  = createTabButton(">> SYSTEM", 0);
+        tabSysBtn  = createTabButton("SYSTEM", 0);
         tabAppsBtn = createTabButton("DEBLOAT", 1);
         tabDiagBtn = createTabButton("BATTERY", 2);
-        tabBar.addView(tabSysBtn);
-        tabBar.addView(tabAppsBtn);
-        tabBar.addView(tabDiagBtn);
+        tabBar.addView(createTabSlot(tabSysBtn));
+        tabBar.addView(createTabSlot(tabAppsBtn));
+        tabBar.addView(createTabSlot(tabDiagBtn));
         root.addView(tabBar);
 
         // Thick divider
         View div = new View(this);
-        div.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 4));
+        div.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4)));
         div.setBackgroundColor(Color.BLACK);
         root.addView(div);
 
-        // ── Scrollable content ───────────────────────────────────────────────
-        ScrollView scroll = new ScrollView(this);
-        scroll.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+        // ── Scrollable content with horizontal swipe page navigation ─────────
+        mainScrollView = new ScrollView(this);
+        mainScrollView.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1.0f));
+
+        final GestureDetector swipeDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY) {
+                if (e1 == null || e2 == null) return false;
+                float diffX = e2.getX() - e1.getX();
+                float diffY = e2.getY() - e1.getY();
+                if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 100 && Math.abs(velocityX) > 100) {
+                    int jump = Math.max(200, mainScrollView.getHeight() - dpToPx(60));
+                    if (diffX < 0) {
+                        // Swipe Left -> Next Page (Page Down)
+                        mainScrollView.smoothScrollBy(0, jump);
+                    } else {
+                        // Swipe Right -> Prev Page (Page Up)
+                        mainScrollView.smoothScrollBy(0, -jump);
+                    }
+                    return true;
+                }
+                return false;
+            }
+        });
+        mainScrollView.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                swipeDetector.onTouchEvent(event);
+                return false;
+            }
+        });
+
         contentContainer = new LinearLayout(this);
         contentContainer.setOrientation(LinearLayout.VERTICAL);
-        contentContainer.setPadding(0, 0, 0, 40);
-        scroll.addView(contentContainer);
-        root.addView(scroll);
+        contentContainer.setPadding(0, 0, 0, dpToPx(40));
+        mainScrollView.addView(contentContainer);
+        root.addView(mainScrollView);
 
         setContentView(root);
+        updateTabStyles();
         renderCurrentTab();
         startHeaderBatteryUpdater();
     }
@@ -166,6 +231,7 @@ public class MainActivity extends Activity {
         if (headerBatteryUpdater != null) mainHandler.removeCallbacks(headerBatteryUpdater);
         diagBatteryRunning = false;
         if (diagBatteryUpdater != null) mainHandler.removeCallbacks(diagBatteryUpdater);
+        if (searchDebounceRunnable != null) mainHandler.removeCallbacks(searchDebounceRunnable);
     }
 
     // ── Install auto_shutdown.sh from assets ─────────────────────────────────
@@ -242,25 +308,38 @@ public class MainActivity extends Activity {
     // ── Tab routing ──────────────────────────────────────────────────────────
     private Button createTabButton(String text, final int index) {
         Button btn = new Button(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        lp.setMargins(0, 0, 0, 0);
-        btn.setLayoutParams(lp);
         btn.setText(text);
-        btn.setTextSize(11);
-        btn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        btn.setPadding(0, 12, 0, 12);
-        if (index == activeTab) {
-            btn.setBackgroundColor(Color.BLACK);
-            btn.setTextColor(Color.WHITE);
-        } else {
-            btn.setBackgroundColor(Color.WHITE);
-            btn.setTextColor(Color.BLACK);
-        }
+        setSp(btn, 12);
+        btn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        btn.setMinHeight(dpToPx(44));
+        btn.setPadding(0, dpToPx(10), 0, dpToPx(10));
+        btn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+        btn.setTextColor(Color.BLACK);
         btn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) { activeTab = index; renderCurrentTab(); }
         });
         return btn;
+    }
+
+    // Wraps a tab button with a bottom indicator bar for the selected state.
+    private LinearLayout createTabSlot(Button btn) {
+        LinearLayout slot = new LinearLayout(this);
+        slot.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        slp.setMargins(dpToPx(4), 0, dpToPx(4), 0);
+        slot.setLayoutParams(slp);
+        slot.addView(btn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        View indicator = new View(this);
+        indicator.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(3)));
+        indicator.setBackgroundColor(Color.TRANSPARENT);
+        slot.addView(indicator);
+
+        if (btn == tabSysBtn) tabSysIndicator = indicator;
+        else if (btn == tabAppsBtn) tabAppsIndicator = indicator;
+        else if (btn == tabDiagBtn) tabDiagIndicator = indicator;
+        return slot;
     }
 
     private void renderCurrentTab() {
@@ -274,20 +353,19 @@ public class MainActivity extends Activity {
     }
 
     private void updateTabStyles() {
-        if (tabSysBtn != null) {
-            tabSysBtn.setBackgroundColor(activeTab == 0 ? Color.BLACK : Color.WHITE);
-            tabSysBtn.setTextColor(activeTab == 0 ? Color.WHITE : Color.BLACK);
-            tabSysBtn.setText(activeTab == 0 ? ">> SYSTEM" : "SYSTEM");
-        }
-        if (tabAppsBtn != null) {
-            tabAppsBtn.setBackgroundColor(activeTab == 1 ? Color.BLACK : Color.WHITE);
-            tabAppsBtn.setTextColor(activeTab == 1 ? Color.WHITE : Color.BLACK);
-            tabAppsBtn.setText(activeTab == 1 ? ">> DEBLOAT" : "DEBLOAT");
-        }
-        if (tabDiagBtn != null) {
-            tabDiagBtn.setBackgroundColor(activeTab == 2 ? Color.BLACK : Color.WHITE);
-            tabDiagBtn.setTextColor(activeTab == 2 ? Color.WHITE : Color.BLACK);
-            tabDiagBtn.setText(activeTab == 2 ? ">> BATTERY" : "BATTERY");
+        styleTab(tabSysBtn, tabSysIndicator, activeTab == 0);
+        styleTab(tabAppsBtn, tabAppsIndicator, activeTab == 1);
+        styleTab(tabDiagBtn, tabDiagIndicator, activeTab == 2);
+    }
+
+    private void styleTab(Button btn, View indicator, boolean selected) {
+        if (btn == null) return;
+        btn.setBackground(createEinkDrawable(
+            selected ? Color.BLACK : Color.WHITE, Color.BLACK, selected ? 0 : 1, 0));
+        btn.setTextColor(selected ? Color.WHITE : Color.BLACK);
+        btn.setSelected(selected);
+        if (indicator != null) {
+            indicator.setBackgroundColor(selected ? Color.BLACK : Color.TRANSPARENT);
         }
     }
 
@@ -295,31 +373,51 @@ public class MainActivity extends Activity {
     // TAB 1: SYSTEM CONTROLS
     // ─────────────────────────────────────────────────────────────────────────
     private void renderSystemControls() {
-        // ── Log drawer (collapsible, hidden by default) ────────────────────
+        // ── Log drawer (collapsible, hidden by default with crisp 2px border) ──
+        final LinearLayout logContainer = new LinearLayout(this);
+        logContainer.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams logLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        logLp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(8));
+        logContainer.setLayoutParams(logLp);
+        logContainer.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        logContainer.setVisibility(View.GONE);
+
+        TextView logHeader = new TextView(this);
+        logHeader.setText("-- LIVE SYSTEM LOG --");
+        logHeader.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(logHeader, 11);
+        logHeader.setTextColor(Color.WHITE);
+        logHeader.setBackgroundColor(Color.BLACK);
+        logHeader.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+        logContainer.addView(logHeader);
+
         final TextView logDrawer = new TextView(this);
-        logDrawer.setTypeface(Typeface.MONOSPACE);
-        logDrawer.setTextSize(10);
+        logDrawer.setTypeface(Typeface.DEFAULT);
+        setSp(logDrawer, 10);
         logDrawer.setTextColor(Color.BLACK);
         logDrawer.setBackgroundColor(Color.WHITE);
-        logDrawer.setPadding(12, 8, 12, 8);
+        logDrawer.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
         logDrawer.setText("(log appears after first toggle)");
-        logDrawer.setVisibility(View.GONE);
+        logContainer.addView(logDrawer);
 
         final Button logToggle = new Button(this);
+        LinearLayout.LayoutParams ltlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ltlp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        logToggle.setLayoutParams(ltlp);
         logToggle.setText("[>>] SHOW LOG");
-        logToggle.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        logToggle.setTextSize(11);
-        logToggle.setBackgroundColor(Color.WHITE);
+        logToggle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(logToggle, 11);
+        logToggle.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
         logToggle.setTextColor(Color.BLACK);
         logToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                if (logDrawer.getVisibility() == View.GONE) {
-                    logDrawer.setVisibility(View.VISIBLE);
+                if (logContainer.getVisibility() == View.GONE) {
+                    logContainer.setVisibility(View.VISIBLE);
                     logDrawer.setText(ShellUtils.readLog(15));
                     logToggle.setText("[<<] HIDE LOG");
                 } else {
-                    logDrawer.setVisibility(View.GONE);
+                    logContainer.setVisibility(View.GONE);
                     logToggle.setText("[>>] SHOW LOG");
                 }
             }
@@ -435,25 +533,25 @@ public class MainActivity extends Activity {
         LinearLayout profileRow = new LinearLayout(this);
         profileRow.setOrientation(LinearLayout.HORIZONTAL);
         profileRow.setGravity(Gravity.CENTER_VERTICAL);
-        profileRow.setPadding(16, 8, 16, 8);
+        profileRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
         profileRow.setBackgroundColor(Color.WHITE);
 
         TextView pLabel = new TextView(this);
         pLabel.setText("PROFILE: ");
-        pLabel.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        pLabel.setTextSize(11);
+        pLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pLabel, 11);
         pLabel.setTextColor(Color.BLACK);
 
         final TextView pVal = new TextView(this);
         pVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient")));
-        pVal.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        pVal.setTextSize(11);
+        pVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pVal, 11);
         pVal.setTextColor(Color.BLACK);
 
         Button changeProfile = new Button(this);
         changeProfile.setText("[CHANGE]");
-        changeProfile.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        changeProfile.setTextSize(11);
+        changeProfile.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(changeProfile, 11);
         changeProfile.setBackgroundColor(Color.BLACK);
         changeProfile.setTextColor(Color.WHITE);
         changeProfile.setOnClickListener(new View.OnClickListener() {
@@ -490,7 +588,7 @@ public class MainActivity extends Activity {
         profileRow.addView(pLabel);
         profileRow.addView(pVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
         profileRow.addView(changeProfile);
-        contentContainer.addView(profileRow);
+        addSectionContent(profileRow);
 
         addToggle("4_CORE_MODE", "HOTPLUG_4_CORES",
             "Power down Cores 4-7 to reduce silicon leakage (Auto-enforced in E-Reader Battery)",
@@ -528,25 +626,25 @@ public class MainActivity extends Activity {
         LinearLayout timeoutRow = new LinearLayout(this);
         timeoutRow.setOrientation(LinearLayout.HORIZONTAL);
         timeoutRow.setGravity(Gravity.CENTER_VERTICAL);
-        timeoutRow.setPadding(16, 8, 16, 8);
+        timeoutRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
         timeoutRow.setBackgroundColor(Color.WHITE);
 
         TextView tLabel = new TextView(this);
         tLabel.setText("TIMEOUT: ");
-        tLabel.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        tLabel.setTextSize(11);
+        tLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(tLabel, 11);
         tLabel.setTextColor(Color.BLACK);
 
         final TextView tVal = new TextView(this);
         tVal.setText(currentConfig.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120") + " MIN");
-        tVal.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        tVal.setTextSize(11);
+        tVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(tVal, 11);
         tVal.setTextColor(Color.BLACK);
 
         Button changeTimer = new Button(this);
         changeTimer.setText("[CHANGE]");
-        changeTimer.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        changeTimer.setTextSize(11);
+        changeTimer.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(changeTimer, 11);
         changeTimer.setBackgroundColor(Color.BLACK);
         changeTimer.setTextColor(Color.WHITE);
         changeTimer.setOnClickListener(new View.OnClickListener() {
@@ -601,151 +699,203 @@ public class MainActivity extends Activity {
         timeoutRow.addView(tLabel);
         timeoutRow.addView(tVal);
         timeoutRow.addView(changeTimer);
-        contentContainer.addView(timeoutRow);
+        addSectionContent(timeoutRow);
 
-        // ── APPLY ALL button ───────────────────────────────────────────────
-        Button applyBtn = new Button(this);
+        // ── APPLY ALL button (with confirmation dialog) ─────────────────────
+        final Button applyBtn = new Button(this);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.setMargins(0, 16, 0, 0);
+        alp.setMargins(dpToPx(8), dpToPx(16), dpToPx(8), dpToPx(4));
         applyBtn.setLayoutParams(alp);
         applyBtn.setText(">>> APPLY ALL RULES <<<");
-        applyBtn.setBackgroundColor(Color.BLACK);
+        applyBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
         applyBtn.setTextColor(Color.WHITE);
-        applyBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        applyBtn.setTextSize(14);
-        applyBtn.setPadding(0, 16, 0, 16);
+        applyBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(applyBtn, 13);
+        applyBtn.setPadding(0, dpToPx(16), 0, dpToPx(16));
         applyBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                applyBtn.setEnabled(false);
-                applyBtn.setText("APPLYING...");
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        ConfigManager.saveConfig(currentConfig);
-                        new BootReceiver().applyAllRulesPublic(MainActivity.this);
-                        final String log = ShellUtils.readLog(15);
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                applyBtn.setEnabled(true);
-                                applyBtn.setText(">>> APPLY ALL RULES <<<");
-                                logDrawer.setText(log);
-                            }
-                        });
-                    }
-                }).start();
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("APPLY ALL RULES?")
+                    .setMessage("Enforce all configured power management policies, CPU governors, and debloat rules via root?")
+                    .setPositiveButton("APPLY", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            applyBtn.setEnabled(false);
+                            applyBtn.setText("APPLYING...");
+                            new Thread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    ConfigManager.saveConfig(currentConfig);
+                                    new BootReceiver().applyAllRulesPublic(MainActivity.this);
+                                    final String log = ShellUtils.readLog(15);
+                                    mainHandler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            applyBtn.setEnabled(true);
+                                            applyBtn.setText(">>> APPLY ALL RULES <<<");
+                                            logDrawer.setText(log);
+                                        }
+                                    });
+                                }
+                            }).start();
+                        }
+                    })
+                    .setNegativeButton("CANCEL", null)
+                    .show();
             }
         });
-        contentContainer.addView(applyBtn);
+        addSectionContent(applyBtn);
 
         // ── Log drawer (collapsible) ───────────────────────────────────────
-        contentContainer.addView(logToggle);
-        contentContainer.addView(logDrawer);
+        addSectionContent(logToggle);
+        addSectionContent(logContainer);
     }
 
+    // Active target for section content. When null, content goes to contentContainer.
+    private LinearLayout sectionTarget;
+
     private void addSectionHeader(String text) {
+        addSectionHeader(text, null);
+    }
+
+    // Adds a collapsible section header and routes subsequent addSectionContent calls into its body.
+    private void addSectionHeader(String text, String subtitle) {
         View bar = new View(this);
-        bar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 4));
+        bar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4)));
         bar.setBackgroundColor(Color.BLACK);
         contentContainer.addView(bar);
 
+        final LinearLayout headerRow = new LinearLayout(this);
+        headerRow.setOrientation(LinearLayout.HORIZONTAL);
+        headerRow.setGravity(Gravity.CENTER_VERTICAL);
+        headerRow.setBackgroundColor(Color.BLACK);
+        headerRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+
         TextView tv = new TextView(this);
+        tv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
         tv.setText(text);
-        tv.setTextSize(12);
-        tv.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        setSp(tv, 12);
+        tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         tv.setTextColor(Color.WHITE);
-        tv.setBackgroundColor(Color.BLACK);
-        tv.setPadding(16, 8, 16, 8);
-        contentContainer.addView(tv);
+        headerRow.addView(tv);
+
+        final TextView chevron = new TextView(this);
+        chevron.setText("[ - ]");
+        setSp(chevron, 12);
+        chevron.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        chevron.setTextColor(Color.WHITE);
+        headerRow.addView(chevron);
+
+        final LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+
+        final LinearLayout bodyWrap = new LinearLayout(this);
+        bodyWrap.setOrientation(LinearLayout.VERTICAL);
+        bodyWrap.addView(body);
+
+        headerRow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                boolean collapse = bodyWrap.getVisibility() == View.VISIBLE;
+                bodyWrap.setVisibility(collapse ? View.GONE : View.VISIBLE);
+                chevron.setText(collapse ? "[ + ]" : "[ - ]");
+            }
+        });
+
+        contentContainer.addView(headerRow);
+
+        if (subtitle != null && !subtitle.isEmpty()) {
+            TextView sub = new TextView(this);
+            sub.setText(subtitle);
+            setSp(sub, 10);
+            sub.setTypeface(Typeface.DEFAULT);
+            sub.setTextColor(Color.BLACK);
+            sub.setPadding(dpToPx(16), dpToPx(4), dpToPx(16), dpToPx(4));
+            body.addView(sub);
+        }
+
+        contentContainer.addView(bodyWrap);
+
+        final LinearLayout target = body;
+        sectionTarget = target;
     }
 
-    // ── addToggle ─────────────────────────────────────────────────────────────
+    // Adds a view to the current section body (or contentContainer when no section is open).
+    private void addSectionContent(View v) {
+        if (sectionTarget != null) sectionTarget.addView(v);
+        else contentContainer.addView(v);
+    }
+
+    // ── addToggle: E-ink [ ON ] / [ OFF ] Tactile Pill Toggle ───────────────
     private void addToggle(final String label, final String configKey, String desc,
                            final boolean inverted,
                            final String onCmd, final String offCmd, final String verifyCmd,
                            final TextView logDrawer) {
 
         final String val = currentConfig.getProperty(configKey, inverted ? "0" : "1");
-        final boolean isOn = inverted ? "0".equals(val) : "1".equals(val);
+        final boolean initialOn = inverted ? "0".equals(val) : "1".equals(val);
+        final boolean[] stateHolder = new boolean[] { initialOn };
 
-        // Card with thick black border
-        LinearLayout card = new LinearLayout(this);
+        // Card with 2dp solid black border
+        final LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clp.setMargins(8, 4, 8, 4);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
         card.setLayoutParams(clp);
-        card.setBackgroundColor(Color.WHITE);
-        card.setPadding(12, 10, 12, 10);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
 
-        // Top row: status badge + title + switch
+        // Top row: title + pill button
         LinearLayout topRow = new LinearLayout(this);
         topRow.setOrientation(LinearLayout.HORIZONTAL);
         topRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        final TextView badge = new TextView(this);
-        badge.setText(isOn ? "[+]" : "[-]");
-        badge.setTextSize(14);
-        badge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        badge.setTextColor(isOn ? Color.BLACK : Color.WHITE);
-        badge.setBackgroundColor(isOn ? Color.WHITE : Color.BLACK);
-        badge.setPadding(6, 2, 6, 2);
-
         TextView tTitle = new TextView(this);
         tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-        tTitle.setText(" " + label);
-        tTitle.setTextSize(12);
-        tTitle.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        tTitle.setText(label);
+        setSp(tTitle, 12);
+        tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         tTitle.setTextColor(Color.BLACK);
-        tTitle.setPadding(8, 0, 0, 0);
 
-        final Switch sw = new Switch(this);
-        sw.setChecked(isOn);
+        final TextView pillBtn = new TextView(this);
 
-        topRow.addView(badge);
+        pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pillBtn, 12);
+        pillBtn.setGravity(Gravity.CENTER);
+        pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+        updatePillView(pillBtn, initialOn);
+
         topRow.addView(tTitle);
-        topRow.addView(sw);
+        topRow.addView(pillBtn);
         card.addView(topRow);
 
         // Description
         TextView tDesc = new TextView(this);
         tDesc.setText(desc);
-        tDesc.setTextSize(10);
-        tDesc.setTypeface(Typeface.MONOSPACE);
+        setSp(tDesc, 11);
+        tDesc.setTypeface(Typeface.DEFAULT);
         tDesc.setTextColor(Color.BLACK);
-        tDesc.setPadding(0, 4, 0, 2);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
         card.addView(tDesc);
 
-        // Status line
-        final TextView statusLine = new TextView(this);
-        statusLine.setText(isOn ? "[ON]  tap toggle to flip" : "[OFF]  tap toggle to flip");
-        statusLine.setTextSize(10);
-        statusLine.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        statusLine.setTextColor(Color.BLACK);
-        card.addView(statusLine);
 
-        // Bottom border
-        View cardBorder = new View(this);
-        cardBorder.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 2));
-        cardBorder.setBackgroundColor(Color.BLACK);
-        card.addView(cardBorder);
 
-        contentContainer.addView(card);
+        addSectionContent(card);
 
-        sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+        final Runnable toggleAction = new Runnable() {
             @Override
-            public void onCheckedChanged(CompoundButton buttonView, boolean checked) {
-                final String newVal = inverted ? (checked ? "0" : "1") : (checked ? "1" : "0");
+            public void run() {
+                final boolean newChecked = !stateHolder[0];
+                stateHolder[0] = newChecked;
+                final String newVal = inverted ? (newChecked ? "0" : "1") : (newChecked ? "1" : "0");
                 currentConfig.setProperty(configKey, newVal);
                 ConfigManager.saveConfig(currentConfig);
 
-                // Update badge
-                badge.setText(checked ? "[+]" : "[-]");
-                badge.setTextColor(checked ? Color.BLACK : Color.WHITE);
-                badge.setBackgroundColor(checked ? Color.WHITE : Color.BLACK);
-                statusLine.setText("[>>> APPLYING...]");
+                // Update pill button instantly
+                updatePillView(pillBtn, newChecked);
 
-                final String cmd = checked ? onCmd : offCmd;
+                final String cmd = newChecked ? onCmd : offCmd;
                 if (cmd != null && !cmd.isEmpty()) {
                     new Thread(new Runnable() {
                         @Override
@@ -758,14 +908,10 @@ public class MainActivity extends Activity {
                             final String statusText = verResult.isEmpty()
                                 ? (res.isSuccess() ? "[OK]" : "[FAIL]")
                                 : "[OK: " + verResult + "]";
-                            final boolean ok = res.isSuccess();
                             final String log = ShellUtils.readLog(15);
                             mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    statusLine.setText(statusText + "  tap toggle to flip");
-                                    statusLine.setTextColor(ok ? Color.BLACK : Color.BLACK);
-                                    statusLine.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
                                     if (logDrawer != null) logDrawer.setText(log);
                                 }
                             });
@@ -773,12 +919,58 @@ public class MainActivity extends Activity {
                     }).start();
                 }
             }
+        };
+
+        card.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { toggleAction.run(); }
         });
+        pillBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { toggleAction.run(); }
+        });
+    }
+
+    private void updatePillView(TextView pillBtn, boolean isOn) {
+        if (isOn) {
+            pillBtn.setText("[  ON  ]");
+            pillBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+            pillBtn.setTextColor(Color.WHITE);
+        } else {
+            pillBtn.setText("[ OFF ]");
+            pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+            pillBtn.setTextColor(Color.BLACK);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // TAB 2: APP DEBLOAT
     // ─────────────────────────────────────────────────────────────────────────
+    // Filter options: internal codes -> human-readable labels.
+    private String[] getFilterValues() {
+        return new String[] {"ALL", "USER", "SYSTEM", "FROZEN", "RSTR", "PROT"};
+    }
+
+    private String[] getFilterLabels() {
+        return new String[] {
+            "All packages",
+            "User apps only",
+            "System apps only",
+            "Frozen apps only",
+            "Background restricted",
+            "Protected apps"
+        };
+    }
+
+    private String getFilterLabel(String value) {
+        String[] values = getFilterValues();
+        String[] labels = getFilterLabels();
+        for (int i = 0; i < values.length; i++) {
+            if (values[i].equals(value)) return labels[i];
+        }
+        return value;
+    }
+
     private String getSortName(int mode) {
         switch (mode) {
             case 0: return "A-Z";
@@ -788,37 +980,6 @@ public class MainActivity extends Activity {
             case 4: return "PROT";
             default: return "A-Z";
         }
-    }
-
-    private Button createFilterButton(final String name, final LinearLayout listContainer, final PackageManager pm, final List<String> protected_pkgs, final LinearLayout filterBar) {
-        final Button b = new Button(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        lp.setMargins(2, 0, 2, 0);
-        b.setLayoutParams(lp);
-        b.setText(name);
-        b.setTextSize(10);
-        b.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        b.setPadding(0, 6, 0, 6);
-        boolean isSel = debloatFilter.equals(name);
-        b.setBackgroundColor(isSel ? Color.BLACK : Color.WHITE);
-        b.setTextColor(isSel ? Color.WHITE : Color.BLACK);
-        b.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                debloatFilter = name;
-                for (int i = 0; i < filterBar.getChildCount(); i++) {
-                    View child = filterBar.getChildAt(i);
-                    if (child instanceof Button) {
-                        Button cb = (Button) child;
-                        boolean s = cb.getText().toString().equals(debloatFilter);
-                        cb.setBackgroundColor(s ? Color.BLACK : Color.WHITE);
-                        cb.setTextColor(s ? Color.WHITE : Color.BLACK);
-                    }
-                }
-                renderDebloatList(listContainer, pm, protected_pkgs);
-            }
-        });
-        return b;
     }
 
     private void renderAppDebloat() {
@@ -841,194 +1002,72 @@ public class MainActivity extends Activity {
         protected_pkgs.add("com.syncthing.android");
         protected_pkgs.add("com.wireguard.android");
 
-        addSectionHeader("PACKAGE FREEZER");
-
-        TextView sTitle = new TextView(this);
-        sTitle.setText("FREEZE, UNFREEZE, OR RESTRICT");
-        sTitle.setTextSize(10);
-        sTitle.setTypeface(Typeface.MONOSPACE);
-        sTitle.setTextColor(Color.BLACK);
-        sTitle.setPadding(16, 8, 16, 8);
-        contentContainer.addView(sTitle);
-
-        // Quick action buttons
-        LinearLayout quickRow = new LinearLayout(this);
-        quickRow.setOrientation(LinearLayout.HORIZONTAL);
-        quickRow.setPadding(0, 0, 0, 8);
-
-        Button freezeAll = new Button(this);
-        LinearLayout.LayoutParams falp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        falp.setMargins(0, 0, 6, 0);
-        freezeAll.setLayoutParams(falp);
-        freezeAll.setText("FREEZE ALL");
-        freezeAll.setBackgroundColor(Color.BLACK);
-        freezeAll.setTextColor(Color.WHITE);
-        freezeAll.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        freezeAll.setTextSize(11);
-        freezeAll.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("Freeze All Non-Protected Packages?")
-                    .setMessage("This will freeze all Google, Bigme, MTK and AOSP bloat packages immediately via root.")
-                    .setPositiveButton("Freeze All", new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface d, int w) {
-                            Toast.makeText(MainActivity.this, "Freezing all packages...", Toast.LENGTH_SHORT).show();
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    String allPkgs = ConfigManager.GOOGLE_PKGS + " " + ConfigManager.BIGME_PKGS + " " + ConfigManager.MTK_PKGS + " " + ConfigManager.AOSP_PKGS;
-                                    ShellUtils.execRoot(ConfigManager.buildPmCmd(allPkgs, true));
-                                    currentConfig.setProperty("GOOGLE_STACK", "0");
-                                    currentConfig.setProperty("BIGME_BLOAT", "0");
-                                    currentConfig.setProperty("MTK_CELLULAR", "0");
-                                    currentConfig.setProperty("AOSP_STUBS", "0");
-                                    ConfigManager.saveConfig(currentConfig);
-                                    cachedAppItems = null;
-                                    mainHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            Toast.makeText(MainActivity.this, "All packages frozen!", Toast.LENGTH_LONG).show();
-                                            renderAppDebloat();
-                                        }
-                                    });
-                                }
-                            }).start();
-                        }
-                    })
-                    .setNegativeButton("Cancel", null)
-                    .show();
-            }
-        });
-        quickRow.addView(freezeAll);
-
-        Button unfreezeAll = new Button(this);
-        LinearLayout.LayoutParams ualp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        unfreezeAll.setLayoutParams(ualp);
-        unfreezeAll.setText("UNFREEZE ALL");
-        unfreezeAll.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        unfreezeAll.setTextSize(11);
-        unfreezeAll.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                Toast.makeText(MainActivity.this, "Unfreezing all packages...", Toast.LENGTH_SHORT).show();
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        String allPkgs = ConfigManager.GOOGLE_PKGS + " " + ConfigManager.BIGME_PKGS + " " + ConfigManager.MTK_PKGS + " " + ConfigManager.AOSP_PKGS;
-                        ShellUtils.execRoot(ConfigManager.buildPmCmd(allPkgs, false));
-                        currentConfig.setProperty("GOOGLE_STACK", "1");
-                        currentConfig.setProperty("BIGME_BLOAT", "1");
-                        currentConfig.setProperty("MTK_CELLULAR", "1");
-                        currentConfig.setProperty("AOSP_STUBS", "1");
-                        ConfigManager.saveConfig(currentConfig);
-                        cachedAppItems = null;
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                Toast.makeText(MainActivity.this, "All packages unfrozen.", Toast.LENGTH_LONG).show();
-                                renderAppDebloat();
-                            }
-                        });
-                    }
-                }).start();
-            }
-        });
-        quickRow.addView(unfreezeAll);
-
-        Button restrictUser = new Button(this);
-        LinearLayout.LayoutParams rualp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        rualp.setMargins(6, 0, 0, 0);
-        restrictUser.setLayoutParams(rualp);
-        restrictUser.setText("RESTRICT USR");
-        restrictUser.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        restrictUser.setTextSize(11);
-        restrictUser.setBackgroundColor(Color.WHITE);
-        restrictUser.setTextColor(Color.BLACK);
-        restrictUser.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("Restrict Third-Party User Apps?")
-                    .setMessage("Set all non-protected user apps to Standby Bucket RARE (40) and silence background wakelocks/alarms.\n\nProtected apps (like KOReader) will not be affected.")
-                    .setPositiveButton("RESTRICT", new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface d, int w) {
-                            Toast.makeText(MainActivity.this, "Restricting user apps...", Toast.LENGTH_SHORT).show();
-                            new Thread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (cachedAppItems != null) {
-                                        java.util.Set<String> restricted = ConfigManager.loadRestrictedPkgs();
-                                        for (AppItem it : cachedAppItems) {
-                                            if (!it.isSystem && !it.isProt && it.isEnabled) {
-                                                ShellUtils.execRoot(ConfigManager.buildRestrictCmd(it.pkg));
-                                                restricted.add(it.pkg);
-                                            }
-                                        }
-                                        ConfigManager.saveRestrictedPkgs(restricted);
-                                    }
-                                    cachedAppItems = null;
-                                    mainHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            Toast.makeText(MainActivity.this, "User apps restricted!", Toast.LENGTH_LONG).show();
-                                            renderAppDebloat();
-                                        }
-                                    });
-                                }
-                            }).start();
-                        }
-                    })
-                    .setNegativeButton("CANCEL", null)
-                    .show();
-            }
-        });
-        quickRow.addView(restrictUser);
-        contentContainer.addView(quickRow);
+        addSectionHeader("PACKAGE MANAGER", "FREEZE, UNFREEZE, OR RESTRICT");
 
         final LinearLayout listContainer = new LinearLayout(this);
         listContainer.setOrientation(LinearLayout.VERTICAL);
 
         final PackageManager pm = getPackageManager();
 
-        // Filter chips bar
-        final LinearLayout filterBar = new LinearLayout(this);
-        filterBar.setOrientation(LinearLayout.HORIZONTAL);
-        filterBar.setPadding(0, 0, 0, 8);
-
-        filterBar.addView(createFilterButton("ALL", listContainer, pm, protected_pkgs, filterBar));
-        filterBar.addView(createFilterButton("USER", listContainer, pm, protected_pkgs, filterBar));
-        filterBar.addView(createFilterButton("SYSTEM", listContainer, pm, protected_pkgs, filterBar));
-        filterBar.addView(createFilterButton("FROZEN", listContainer, pm, protected_pkgs, filterBar));
-        filterBar.addView(createFilterButton("RSTR", listContainer, pm, protected_pkgs, filterBar));
-        filterBar.addView(createFilterButton("PROT", listContainer, pm, protected_pkgs, filterBar));
-        contentContainer.addView(filterBar);
-
-        // Search & Sort bar
-        LinearLayout searchSortRow = new LinearLayout(this);
-        searchSortRow.setOrientation(LinearLayout.HORIZONTAL);
-        searchSortRow.setGravity(Gravity.CENTER_VERTICAL);
-        searchSortRow.setPadding(8, 0, 8, 8);
+        // Search bar
+        LinearLayout searchRow = new LinearLayout(this);
+        searchRow.setOrientation(LinearLayout.HORIZONTAL);
+        searchRow.setGravity(Gravity.CENTER_VERTICAL);
+        searchRow.setPadding(dpToPx(8), 0, dpToPx(8), dpToPx(4));
 
         final EditText searchBox = new EditText(this);
         searchBox.setHint("SEARCH...");
-        searchBox.setTypeface(Typeface.MONOSPACE);
-        searchBox.setTextSize(11);
-        searchBox.setPadding(12, 10, 12, 10);
-        searchBox.setBackgroundColor(Color.WHITE);
+        searchBox.setTypeface(Typeface.DEFAULT);
+        setSp(searchBox, 11);
+        searchBox.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+        searchBox.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+        searchBox.setTextColor(Color.BLACK);
+        searchBox.setHintTextColor(Color.BLACK);
         searchBox.setText(debloatSearch);
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        searchBox.setLayoutParams(slp);
-        searchSortRow.addView(searchBox);
+        searchBox.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        searchRow.addView(searchBox);
+        addSectionContent(searchRow);
+
+        // Filter & Sort bar
+        LinearLayout filterSortRow = new LinearLayout(this);
+        filterSortRow.setOrientation(LinearLayout.HORIZONTAL);
+        filterSortRow.setGravity(Gravity.CENTER_VERTICAL);
+        filterSortRow.setPadding(dpToPx(8), 0, dpToPx(8), dpToPx(8));
+
+        final Button filterBtn = new Button(this);
+        filterBtn.setText("FILTER: " + getFilterLabel(debloatFilter));
+        setSp(filterBtn, 10);
+        filterBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        styleEinkButton(filterBtn, false);
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        flp.setMargins(0, 0, dpToPx(4), 0);
+        filterBtn.setLayoutParams(flp);
+        filterBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                final String[] labels = getFilterLabels();
+                final String[] values = getFilterValues();
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("Filter Packages")
+                    .setItems(labels, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            debloatFilter = values[which];
+                            filterBtn.setText("FILTER: " + getFilterLabel(debloatFilter));
+                            renderDebloatList(listContainer, pm, protected_pkgs);
+                        }
+                    }).show();
+            }
+        });
+        filterSortRow.addView(filterBtn);
 
         final Button sortBtn = new Button(this);
         sortBtn.setText("SORT: " + getSortName(debloatSortMode));
-        sortBtn.setTextSize(10);
-        sortBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stlp.setMargins(6, 0, 0, 0);
+        setSp(sortBtn, 10);
+        sortBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        styleEinkButton(sortBtn, false);
+        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        stlp.setMargins(dpToPx(4), 0, 0, 0);
         sortBtn.setLayoutParams(stlp);
         sortBtn.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1046,16 +1085,24 @@ public class MainActivity extends Activity {
                     }).show();
             }
         });
-        searchSortRow.addView(sortBtn);
-        contentContainer.addView(searchSortRow);
+        filterSortRow.addView(sortBtn);
+        addSectionContent(filterSortRow);
 
-        contentContainer.addView(listContainer);
+        addSectionContent(listContainer);
 
+        // 350ms Debounced search watcher to prevent keyboard stutter and screen flashing on E-ink
         searchBox.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 debloatSearch = s.toString();
-                renderDebloatList(listContainer, pm, protected_pkgs);
+                if (searchDebounceRunnable != null) mainHandler.removeCallbacks(searchDebounceRunnable);
+                searchDebounceRunnable = new Runnable() {
+                    @Override
+                    public void run() {
+                        renderDebloatList(listContainer, pm, protected_pkgs);
+                    }
+                };
+                mainHandler.postDelayed(searchDebounceRunnable, 350);
             }
             public void afterTextChanged(android.text.Editable s) {}
         });
@@ -1063,7 +1110,9 @@ public class MainActivity extends Activity {
         if (cachedAppItems == null) {
             final TextView loading = new TextView(this);
             loading.setText("Loading packages...");
-            loading.setTypeface(Typeface.MONOSPACE);
+            loading.setTypeface(Typeface.DEFAULT);
+            setSp(loading, 11);
+            loading.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
             listContainer.addView(loading);
 
             new Thread(new Runnable() {
@@ -1129,6 +1178,42 @@ public class MainActivity extends Activity {
         }
     }
 
+    // Plain-language status line so no two concepts share a label.
+    private void updateDebloatStatusLine(TextView statusLine, AppItem item) {
+        String freeze = item.isEnabled ? "Not frozen" : "Frozen";
+        String bg = item.isRestricted ? "restricted" : "allowed";
+        String doze = item.isDozeExempt ? "doze exempt" : "doze optimized";
+        statusLine.setText(freeze + "  |  background: " + bg +
+            "  |  " + doze + "  |  usage: " + bucketDescription(item.standbyBucket));
+    }
+
+    // Human-readable meaning of the Android standby bucket value.
+    private String bucketDescription(int bucket) {
+        switch (bucket) {
+            case 5:  return "exempt (unrestricted)";
+            case 10: return "active (in use now)";
+            case 20: return "working set (used recently)";
+            case 30: return "frequent (used often)";
+            case 40: return "rare (throttled)";
+            case 45: return "restricted (silenced)";
+            case 50: return "never (not used)";
+            default: return "bucket " + bucket;
+        }
+    }
+
+    private void refreshDebloatListWithScroll() {
+        final int scrollY = mainScrollView != null ? mainScrollView.getScrollY() : 0;
+        renderAppDebloat();
+        if (mainScrollView != null) {
+            mainScrollView.post(new Runnable() {
+                @Override
+                public void run() {
+                    mainScrollView.scrollTo(0, scrollY);
+                }
+            });
+        }
+    }
+
     private void renderDebloatList(final LinearLayout listContainer, final PackageManager pm, final List<String> protected_pkgs) {
         if (cachedAppItems == null) return;
         listContainer.removeAllViews();
@@ -1175,166 +1260,140 @@ public class MainActivity extends Activity {
 
         TextView hdr = new TextView(this);
         hdr.setText(filtered.size() + "/" + cachedAppItems.size() + " PKGS [" + debloatFilter + "]");
-        hdr.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        hdr.setTextSize(10);
+        hdr.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(hdr, 10);
         hdr.setTextColor(Color.BLACK);
         hdr.setBackgroundColor(Color.WHITE);
-        hdr.setPadding(16, 6, 16, 6);
+        hdr.setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6));
         listContainer.addView(hdr);
 
         for (final AppItem item : filtered) {
             final String pkg = item.pkg;
             final boolean isProt = item.isProt;
-            final boolean isEnabled = item.isEnabled;
 
             LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            rlp.setMargins(8, 3, 8, 3);
+            rlp.setMargins(dpToPx(8), dpToPx(3), dpToPx(8), dpToPx(3));
             row.setLayoutParams(rlp);
 
-            // Frozen rows are inverted (white on black)
-            if (!isEnabled) {
-                row.setBackgroundColor(Color.BLACK);
-            } else {
-                row.setBackgroundColor(Color.WHITE);
-            }
+            // Clean white card with 1.5dp black border (eliminates zebra scrolling ghosting)
+            row.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
 
-            // Top row: App Name + Status Badges
-            LinearLayout topRow = new LinearLayout(this);
-            topRow.setOrientation(LinearLayout.HORIZONTAL);
-            topRow.setGravity(Gravity.CENTER_VERTICAL);
-            topRow.setPadding(12, 8, 12, 2);
+            // Left column: app name, package, status
+            LinearLayout infoCol = new LinearLayout(this);
+            infoCol.setOrientation(LinearLayout.VERTICAL);
+            infoCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
 
             TextView pName = new TextView(this);
-            pName.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
             pName.setText(item.label);
-            pName.setTextSize(12);
-            pName.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            pName.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-            topRow.addView(pName);
-
-            // Badges container
-            LinearLayout badges = new LinearLayout(this);
-            badges.setOrientation(LinearLayout.HORIZONTAL);
-            badges.setGravity(Gravity.CENTER_VERTICAL);
-
-            // Active / Frozen badge
-            TextView stateBadge = new TextView(this);
-            stateBadge.setText(isEnabled ? "[ACTIVE]" : "[FROZEN]");
-            stateBadge.setTextSize(10);
-            stateBadge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            stateBadge.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-            stateBadge.setPadding(4, 0, 4, 0);
-            badges.addView(stateBadge);
-
-            // Standby Bucket badge
-            TextView bktBadge = new TextView(this);
-            String bLabel = ConfigManager.getBucketLabel(item.standbyBucket);
-            bktBadge.setText("[" + bLabel + "]");
-            bktBadge.setTextSize(10);
-            bktBadge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            bktBadge.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-            bktBadge.setPadding(4, 0, 4, 0);
-            badges.addView(bktBadge);
-
-            if (item.isRestricted) {
-                TextView rBadge = new TextView(this);
-                rBadge.setText("[RSTR]");
-                rBadge.setTextSize(10);
-                rBadge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-                rBadge.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-                rBadge.setPadding(4, 0, 4, 0);
-                badges.addView(rBadge);
-            }
-
-            if (item.isDozeExempt) {
-                TextView dzBadge = new TextView(this);
-                dzBadge.setText("[EXEMPT]");
-                dzBadge.setTextSize(10);
-                dzBadge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-                dzBadge.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-                dzBadge.setPadding(4, 0, 4, 0);
-                badges.addView(dzBadge);
-            }
-
-            topRow.addView(badges);
-            row.addView(topRow);
-
-            // Bottom row: Package Name + Action Buttons
-            LinearLayout botRow = new LinearLayout(this);
-            botRow.setOrientation(LinearLayout.HORIZONTAL);
-            botRow.setGravity(Gravity.CENTER_VERTICAL);
-            botRow.setPadding(12, 2, 12, 8);
+            setSp(pName, 12);
+            pName.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            pName.setTextColor(Color.BLACK);
+            pName.setPadding(dpToPx(12), dpToPx(8), dpToPx(6), 0);
+            infoCol.addView(pName);
 
             TextView pPkg = new TextView(this);
             pPkg.setText(pkg);
-            pPkg.setTextSize(9);
-            pPkg.setTypeface(Typeface.MONOSPACE);
-            pPkg.setTextColor(isEnabled ? Color.BLACK : Color.WHITE);
-            pPkg.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-            botRow.addView(pPkg);
+            setSp(pPkg, 10);
+            pPkg.setTypeface(Typeface.DEFAULT);
+            pPkg.setTextColor(Color.BLACK);
+            pPkg.setPadding(dpToPx(12), dpToPx(1), dpToPx(6), dpToPx(3));
+            infoCol.addView(pPkg);
 
-            // Quick Freeze/Unfreeze button
+            // Status detail line (explicit, plain-language labels)
+            final TextView statusLine = new TextView(this);
+            setSp(statusLine, 10);
+            statusLine.setTypeface(Typeface.DEFAULT);
+            statusLine.setTextColor(Color.BLACK);
+            statusLine.setPadding(dpToPx(12), 0, dpToPx(6), dpToPx(8));
+            updateDebloatStatusLine(statusLine, item);
+            infoCol.addView(statusLine);
+
+            row.addView(infoCol);
+
+            // Right column: stacked actions with a gap between them
+            LinearLayout actionCol = new LinearLayout(this);
+            actionCol.setOrientation(LinearLayout.VERTICAL);
+            actionCol.setGravity(Gravity.CENTER_VERTICAL);
+            actionCol.setPadding(0, dpToPx(6), dpToPx(12), dpToPx(6));
+
+            // Quick Freeze/Unfreeze button with in-place update (no scroll kick-to-top)
             if (!isProt) {
                 final Button quickBtn = new Button(this);
-                quickBtn.setText(isEnabled ? "FREEZE" : "UNFREEZE");
-                quickBtn.setTextSize(9);
-                quickBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-                quickBtn.setPadding(8, 4, 8, 4);
+                quickBtn.setText(item.isEnabled ? "FREEZE" : "UNFREEZE");
+                setSp(quickBtn, 11);
+                quickBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                quickBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+                quickBtn.setTextColor(Color.BLACK);
+                quickBtn.setMinWidth(dpToPx(104));
+                quickBtn.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
+                LinearLayout.LayoutParams qblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                qblp.setMargins(0, 0, 0, dpToPx(6));
+                quickBtn.setLayoutParams(qblp);
                 quickBtn.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
                         quickBtn.setEnabled(false);
+                        final boolean targetEnabled = !item.isEnabled;
+                        item.isEnabled = targetEnabled;
+                        updateDebloatStatusLine(statusLine, item);
+                        quickBtn.setText(targetEnabled ? "FREEZE" : "UNFREEZE");
+
                         new Thread(new Runnable() {
                             @Override
                             public void run() {
-                                if (isEnabled) {
+                                if (!targetEnabled) {
                                     ShellUtils.execRoot("pm disable-user --user 0 " + pkg + " 2>/dev/null");
                                 } else {
                                     ShellUtils.execRoot("pm enable " + pkg + " 2>/dev/null");
                                 }
-                                cachedAppItems = null;
                                 mainHandler.post(new Runnable() {
                                     @Override
                                     public void run() {
-                                        Toast.makeText(MainActivity.this, (isEnabled ? "Froze " : "Unfroze ") + pkg, Toast.LENGTH_SHORT).show();
-                                        renderAppDebloat();
+                                        quickBtn.setEnabled(true);
+                                        Toast.makeText(MainActivity.this, (targetEnabled ? "Unfroze " : "Froze ") + pkg, Toast.LENGTH_SHORT).show();
                                     }
                                 });
                             }
                         }).start();
                     }
                 });
-                botRow.addView(quickBtn);
+                actionCol.addView(quickBtn);
             } else {
                 TextView protBadge = new TextView(this);
-                protBadge.setText("[PROT]");
-                protBadge.setTextSize(9);
-                protBadge.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+                protBadge.setText("PROTECTED");
+                setSp(protBadge, 10);
+                protBadge.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
                 protBadge.setTextColor(Color.WHITE);
-                protBadge.setBackgroundColor(Color.BLACK);
-                protBadge.setPadding(6, 2, 6, 2);
-                botRow.addView(protBadge);
+                protBadge.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+                protBadge.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                pblp.setMargins(0, 0, 0, dpToPx(6));
+                protBadge.setLayoutParams(pblp);
+                actionCol.addView(protBadge);
             }
 
-            // Dropdown menu button: [OPTIONS ▾]
+            // Dropdown menu button: OPTIONS
             final Button optBtn = new Button(this);
-            optBtn.setText("OPTIONS ▾");
-            optBtn.setTextSize(9);
-            optBtn.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            optBtn.setPadding(8, 4, 8, 4);
+            optBtn.setText("OPTIONS");
+            setSp(optBtn, 11);
+            optBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            optBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+            optBtn.setTextColor(Color.BLACK);
+            optBtn.setMinWidth(dpToPx(104));
+            optBtn.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
             optBtn.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     showAppActionDialog(item, pm, protected_pkgs, listContainer);
                 }
             });
-            botRow.addView(optBtn);
+            actionCol.addView(optBtn);
 
-            row.addView(botRow);
+            row.addView(actionCol);
 
-            // Tapping card opens the options menu as well
             row.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -1356,28 +1415,28 @@ public class MainActivity extends Activity {
 
         // Action 0: Freeze / Unfreeze
         if (!isProt) {
-            options.add(isEnabled ? "❄️ FREEZE APP (pm disable)" : "☀️ UNFREEZE APP (pm enable)");
+            options.add(isEnabled ? "FREEZE APP (pm disable)" : "UNFREEZE APP (pm enable)");
             actions.add(0);
         }
 
         // Action 1: Restrict AppOps
-        options.add(item.isRestricted ? "🔓 UNRESTRICT APPOPS (Allow background)" : "🔒 RESTRICT APPOPS (Silence wakelocks/alarms)");
+        options.add(item.isRestricted ? "UNRESTRICT APPOPS (Allow background)" : "RESTRICT APPOPS (Silence wakelocks/alarms)");
         actions.add(1);
 
         // Action 2: Standby Bucket
-        options.add("⏱️ SET STANDBY BUCKET: [" + ConfigManager.getBucketLabel(item.standbyBucket) + "] ▾");
+        options.add("SET STANDBY BUCKET: [" + ConfigManager.getBucketLabel(item.standbyBucket) + "]");
         actions.add(2);
 
         // Action 3: Doze Whitelist
-        options.add(item.isDozeExempt ? "🔋 REMOVE DOZE EXEMPTION (Optimize battery)" : "🔋 EXEMPT FROM DOZE (Allow background sync)");
+        options.add(item.isDozeExempt ? "REMOVE DOZE EXEMPTION (Optimize battery)" : "EXEMPT FROM DOZE (Allow background sync)");
         actions.add(3);
 
         // Action 4: Launch App
-        options.add("🚀 RUN / LAUNCH APP");
+        options.add("RUN / LAUNCH APP");
         actions.add(4);
 
         // Action 5: Details
-        options.add("ℹ️ VIEW LIVE APP DETAILS");
+        options.add("VIEW LIVE APP DETAILS");
         actions.add(5);
 
         String[] optArr = options.toArray(new String[0]);
@@ -1412,7 +1471,7 @@ public class MainActivity extends Activity {
                             @Override
                             public void run() {
                                 Toast.makeText(MainActivity.this, (item.isEnabled ? "Froze " : "Unfroze ") + pkg, Toast.LENGTH_SHORT).show();
-                                renderAppDebloat();
+                                refreshDebloatListWithScroll();
                             }
                         });
                     }
@@ -1437,7 +1496,7 @@ public class MainActivity extends Activity {
                             @Override
                             public void run() {
                                 Toast.makeText(MainActivity.this, (item.isRestricted ? "Unrestricted " : "Restricted ") + item.label, Toast.LENGTH_SHORT).show();
-                                renderAppDebloat();
+                                refreshDebloatListWithScroll();
                             }
                         });
                     }
@@ -1458,7 +1517,7 @@ public class MainActivity extends Activity {
                             @Override
                             public void run() {
                                 Toast.makeText(MainActivity.this, (!item.isDozeExempt ? "Exempted " : "Unexempted ") + item.label, Toast.LENGTH_SHORT).show();
-                                renderAppDebloat();
+                                refreshDebloatListWithScroll();
                             }
                         });
                     }
@@ -1490,7 +1549,7 @@ public class MainActivity extends Activity {
                                                         cachedAppItems = null;
                                                         mainHandler.post(new Runnable() {
                                                             @Override
-                                                            public void run() { renderAppDebloat(); }
+                                                            public void run() { refreshDebloatListWithScroll(); }
                                                         });
                                                     }
                                                 }).start();
@@ -1500,7 +1559,7 @@ public class MainActivity extends Activity {
                                             @Override
                                             public void onClick(DialogInterface d, int which) {
                                                 cachedAppItems = null;
-                                                renderAppDebloat();
+                                                refreshDebloatListWithScroll();
                                             }
                                         })
                                         .show();
@@ -1526,11 +1585,11 @@ public class MainActivity extends Activity {
 
     private void showStandbyBucketPicker(final AppItem item, final PackageManager pm, final List<String> protected_pkgs, final LinearLayout listContainer) {
         final String[] buckets = new String[] {
-            "ACTIVE (10) — Unrestricted",
-            "WORKING SET (20) — Active in recent hours",
-            "FREQUENT (30) — Used regularly, light delay",
-            "RARE (40) — Throttled to 24h jobs & delayed alarms",
-            "RESTRICTED (45) — Silenced in background"
+            "ACTIVE (10) - Unrestricted",
+            "WORKING SET (20) - Active in recent hours",
+            "FREQUENT (30) - Used regularly, light delay",
+            "RARE (40) - Throttled to 24h jobs & delayed alarms",
+            "RESTRICTED (45) - Silenced in background"
         };
         final String[] bucketCodes = new String[] { "active", "working_set", "frequent", "rare", "restricted" };
 
@@ -1549,7 +1608,7 @@ public class MainActivity extends Activity {
                                 @Override
                                 public void run() {
                                     Toast.makeText(MainActivity.this, item.label + " -> " + bCode.toUpperCase(), Toast.LENGTH_SHORT).show();
-                                    renderAppDebloat();
+                                    refreshDebloatListWithScroll();
                                 }
                             });
                         }
@@ -1588,102 +1647,145 @@ public class MainActivity extends Activity {
         final LinearLayout powerCard = new LinearLayout(this);
         powerCard.setOrientation(LinearLayout.VERTICAL);
         powerCard.setBackgroundColor(Color.BLACK);
-        powerCard.setPadding(20, 20, 20, 20);
+        powerCard.setPadding(dpToPx(20), dpToPx(20), dpToPx(20), dpToPx(20));
         LinearLayout.LayoutParams pcLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        pcLp.setMargins(8, 4, 8, 8);
+        pcLp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(8));
         powerCard.setLayoutParams(pcLp);
 
         final TextView currentBox = new TextView(this);
-        currentBox.setTextSize(26);
-        currentBox.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        setSp(currentBox, 26);
+        currentBox.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         currentBox.setTextColor(Color.WHITE);
-        currentBox.setText("-- mA");
+        currentBox.setText("Reading...");
         powerCard.addView(currentBox);
 
         final TextView batteryDetailsBox = new TextView(this);
-        batteryDetailsBox.setTextSize(11);
-        batteryDetailsBox.setTypeface(Typeface.MONOSPACE);
-        batteryDetailsBox.setTextColor(Color.LTGRAY);
-        batteryDetailsBox.setPadding(0, 4, 0, 8);
-        batteryDetailsBox.setText("VOLTAGE: -- V  |  TEMP: -- °C");
+        setSp(batteryDetailsBox, 11);
+        batteryDetailsBox.setTypeface(Typeface.DEFAULT);
+        batteryDetailsBox.setTextColor(Color.WHITE);
+        batteryDetailsBox.setPadding(0, dpToPx(4), 0, dpToPx(8));
+        batteryDetailsBox.setText("Waiting for battery data...");
         powerCard.addView(batteryDetailsBox);
 
         final TextView gaugeBox = new TextView(this);
-        gaugeBox.setTextSize(12);
-        gaugeBox.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        setSp(gaugeBox, 12);
+        gaugeBox.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         gaugeBox.setTextColor(Color.WHITE);
-        gaugeBox.setPadding(0, 4, 0, 4);
-        gaugeBox.setText("BATTERY: ??%  ??????....");
+        gaugeBox.setPadding(0, dpToPx(4), 0, dpToPx(4));
+        gaugeBox.setText("BATTERY: --");
         powerCard.addView(gaugeBox);
 
         final TextView projBox = new TextView(this);
-        projBox.setTextSize(10);
-        projBox.setTypeface(Typeface.MONOSPACE);
-        projBox.setTextColor(Color.LTGRAY);
-        projBox.setPadding(0, 6, 0, 0);
+        setSp(projBox, 11);
+        projBox.setTypeface(Typeface.DEFAULT);
+        projBox.setTextColor(Color.WHITE);
+        projBox.setPadding(0, dpToPx(6), 0, 0);
         powerCard.addView(projBox);
 
-        contentContainer.addView(powerCard);
+        addSectionContent(powerCard);
 
         addSectionHeader("LIVE CPU & HARDWARE STATUS");
 
         // Monospace CPU status card
         final LinearLayout cpuCard = new LinearLayout(this);
         cpuCard.setOrientation(LinearLayout.VERTICAL);
-        cpuCard.setBackgroundColor(Color.WHITE);
-        cpuCard.setPadding(16, 16, 16, 16);
+        cpuCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        cpuCard.setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16));
         LinearLayout.LayoutParams cpuCardLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cpuCardLp.setMargins(8, 4, 8, 8);
+        cpuCardLp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(8));
         cpuCard.setLayoutParams(cpuCardLp);
 
         final TextView cpuBox = new TextView(this);
-        cpuBox.setTextSize(11);
-        cpuBox.setTypeface(Typeface.MONOSPACE);
+        setSp(cpuBox, 11);
+        cpuBox.setTypeface(Typeface.DEFAULT);
         cpuBox.setTextColor(Color.BLACK);
-        cpuBox.setText("Querying CPU & hardware status...");
+        cpuBox.setText("Querying CPU and hardware status...");
         cpuCard.addView(cpuBox);
 
-        View cpuBorder = new View(this);
-        cpuBorder.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 2));
-        cpuBorder.setBackgroundColor(Color.BLACK);
-        cpuCard.addView(cpuBorder);
+        addSectionContent(cpuCard);
 
-        contentContainer.addView(cpuCard);
+        // Pause / Resume and Manual Refresh Toolbar
+        LinearLayout diagToolbar = new LinearLayout(this);
+        diagToolbar.setOrientation(LinearLayout.HORIZONTAL);
+        diagToolbar.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
 
-        // Live 3-second polling
+        final Button pauseBtn = new Button(this);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        plp.setMargins(0, 0, dpToPx(4), 0);
+        pauseBtn.setLayoutParams(plp);
+        pauseBtn.setText(diagBatteryPaused ? "[RESUME]" : "[PAUSE]");
+        pauseBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
+        pauseBtn.setTextColor(Color.WHITE);
+        pauseBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pauseBtn, 11);
+        pauseBtn.setPadding(0, dpToPx(10), 0, dpToPx(10));
+        pauseBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                diagBatteryPaused = !diagBatteryPaused;
+                pauseBtn.setText(diagBatteryPaused ? "[RESUME]" : "[PAUSE]");
+                if (!diagBatteryPaused && diagBatteryRunning && diagBatteryUpdater != null) {
+                    mainHandler.post(diagBatteryUpdater);
+                }
+            }
+        });
+        diagToolbar.addView(pauseBtn);
+
+        final Button refreshBtn = new Button(this);
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        rlp.setMargins(dpToPx(4), 0, 0, 0);
+        refreshBtn.setLayoutParams(rlp);
+        refreshBtn.setText("[REFRESH NOW]");
+        refreshBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        refreshBtn.setTextColor(Color.BLACK);
+        refreshBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(refreshBtn, 11);
+        refreshBtn.setPadding(0, dpToPx(10), 0, dpToPx(10));
+        refreshBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                triggerSingleDiagQuery(currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
+            }
+        });
+        diagToolbar.addView(refreshBtn);
+        addSectionContent(diagToolbar);
+
+        // Live 10-second polling (skips when paused)
         diagBatteryRunning = true;
         diagBatteryUpdater = new Runnable() {
             @Override
             public void run() {
                 if (!diagBatteryRunning) return;
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        String cmd = "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
-                                     "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
-                                     "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
-                                     "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
-                                     "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
-                                     "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
-                                     "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
-                                     "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
-                                     "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
-                                     "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
-                                     "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
-                                     "PID=$(cat /data/local/tmp/autoshutdown.pid 2>/dev/null); " +
-                                     "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM|$PID\"";
-                        ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
-                        final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (!diagBatteryRunning) return;
-                                updateDiagUi(out, currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
-                            }
-                        });
-                    }
-                }).start();
-                mainHandler.postDelayed(this, 3000);
+                if (!diagBatteryPaused) {
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            String cmd = "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
+                                         "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
+                                         "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
+                                         "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
+                                         "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
+                                         "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
+                                         "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
+                                         "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
+                                         "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
+                                         "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
+                                         "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
+                                         "PID=$(cat /data/local/tmp/autoshutdown.pid 2>/dev/null); " +
+                                         "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM|$PID\"";
+                            ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
+                            final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (!diagBatteryRunning) return;
+                                    updateDiagUi(out, currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
+                                }
+                            });
+                        }
+                    }).start();
+                }
+                mainHandler.postDelayed(this, 10000);
             }
         };
         mainHandler.post(diagBatteryUpdater);
@@ -1693,30 +1795,32 @@ public class MainActivity extends Activity {
 
         Button sleepTest = new Button(this);
         LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        stlp.setMargins(8, 4, 8, 4);
+        stlp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
         sleepTest.setLayoutParams(stlp);
         sleepTest.setText("[>>] RUN 10-MIN DEEP SLEEP TEST");
-        sleepTest.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        sleepTest.setTextSize(11);
+        sleepTest.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(sleepTest, 11);
+        sleepTest.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        sleepTest.setTextColor(Color.BLACK);
         sleepTest.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 ShellUtils.execRoot("nohup sh /data/local/tmp/full_diag.sh 600 > /data/local/tmp/diag.log 2>&1 &");
             }
         });
-        contentContainer.addView(sleepTest);
+        addSectionContent(sleepTest);
 
         // Power off button (inverted, danger)
         Button powerOff = new Button(this);
         LinearLayout.LayoutParams polp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        polp.setMargins(8, 8, 8, 8);
+        polp.setMargins(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8));
         powerOff.setLayoutParams(polp);
         powerOff.setText(">>> POWER OFF (0.00 mA) <<<");
-        powerOff.setBackgroundColor(Color.BLACK);
+        powerOff.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
         powerOff.setTextColor(Color.WHITE);
-        powerOff.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        powerOff.setTextSize(14);
-        powerOff.setPadding(0, 16, 0, 16);
+        powerOff.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(powerOff, 13);
+        powerOff.setPadding(0, dpToPx(16), 0, dpToPx(16));
         powerOff.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -1733,7 +1837,37 @@ public class MainActivity extends Activity {
                     .show();
             }
         });
-        contentContainer.addView(powerOff);
+        addSectionContent(powerOff);
+    }
+
+    private void triggerSingleDiagQuery(final TextView currentBox, final TextView batteryDetailsBox,
+                                        final TextView gaugeBox, final TextView projBox, final TextView cpuBox) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String cmd = "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
+                             "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
+                             "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
+                             "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
+                             "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
+                             "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
+                             "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
+                             "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
+                             "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
+                             "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
+                             "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
+                             "PID=$(cat /data/local/tmp/autoshutdown.pid 2>/dev/null); " +
+                             "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM|$PID\"";
+                ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
+                final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        updateDiagUi(out, currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
+                    }
+                });
+            }
+        }).start();
     }
 
     private void updateDiagUi(String raw, TextView currentBox, TextView batteryDetailsBox,
@@ -1781,7 +1915,7 @@ public class MainActivity extends Activity {
         int filled = Math.min(10, Math.max(0, capInt / 10));
         int empty = 10 - filled;
         StringBuilder bar = new StringBuilder();
-        for (int i = 0; i < filled; i++) bar.append("█");
+        for (int i = 0; i < filled; i++) bar.append("#");
         for (int i = 0; i < empty; i++) bar.append(".");
         gaugeBox.setText("BATTERY: " + cap + "%  " + bar.toString() + "  [" + st + "]");
 

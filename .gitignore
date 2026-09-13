@@ -1,0 +1,25 @@
+# Build artifacts & bytecode
+*.class
+*.dex
+classes/
+build/
+bin/
+gen/
+obj/
+
+# Keystores & credentials
+*.keystore
+!debug.keystore
+*.jks
+*.key
+
+# Android Studio / IntelliJ
+.idea/
+.gradle/
+*.iml
+local.properties
+.DS_Store
+
+# Logs
+*.log
+/data/

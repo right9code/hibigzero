@@ -15,8 +15,7 @@ public class BootReceiver extends BroadcastReceiver {
             @Override
             public void run() {
                 try {
-                    applyAllRules();
-                    installAutoShutdown(context);
+                    applyAllRules(context);
                     writeBootTime();
                 } finally {
                     result.finish();
@@ -25,44 +24,59 @@ public class BootReceiver extends BroadcastReceiver {
         }).start();
     }
 
-    public void applyAllRulesPublic(android.content.Context ctx) { installAutoShutdown(ctx); applyAllRules(); writeBootTime(); }
+    public void applyAllRulesPublic(android.content.Context ctx) { applyAllRules(ctx); writeBootTime(); }
 
-    private void applyAllRules() {
+    private void applyAllRules(android.content.Context context) {
         ShellUtils.appendLog("=== BootReceiver: applying all rules ===");
         Properties cfg = ConfigManager.loadConfig();
 
-        // 1. Fix UART - kill crash loop & clear early-boot init latch
+        // 1. Fix UART - passive monitor with fallback
         if ("1".equals(cfg.getProperty("FIX_UART"))) {
-            ShellUtils.execRoot(
-                "setprop sys.init.updatable_crashing \"\" 2>/dev/null; " +
-                "setprop sys.init.updatable_crashing_process_name \"\" 2>/dev/null; " +
-                "setprop ctl.stop uart2serport 2>/dev/null; " +
-                "setprop persist.vendor.uart2serport.enable 0 2>/dev/null; " +
-                "kill -9 $(pidof uart2serport) 2>/dev/null; " +
-                "echo '#!/system/bin/sh\\nexit 0' > /system/bin/start_uart2serport.sh 2>/dev/null; " +
-                "chmod 755 /system/bin/start_uart2serport.sh 2>/dev/null");
+            String svcStatus = ShellUtils.execRoot("getprop init.svc.uart2serport").stdout.trim();
+            if ("running".equals(svcStatus)) {
+                ShellUtils.appendLog("uart2serport already running (Magisk module active)");
+            } else {
+                ShellUtils.appendLog("uart2serport status: " + svcStatus + " — applying fallback");
+                // Inject SELinux rule so the sleep stub can execute
+                ShellUtils.execRoot(
+                    "magiskpolicy --live \"allow uart2serport toolbox_exec file { read open getattr execute execute_no_trans map }\" 2>/dev/null");
+                // Bind-mount sleep stub over system script
+                ShellUtils.execRoot(
+                    "mkdir -p /data/local/tmp/uart_fix && " +
+                    "echo '#!/system/bin/sh' > /data/local/tmp/uart_fix/stub.sh && " +
+                    "echo 'exec sleep 2147483647' >> /data/local/tmp/uart_fix/stub.sh && " +
+                    "chmod 755 /data/local/tmp/uart_fix/stub.sh && " +
+                    "chcon u:object_r:system_file:s0 /data/local/tmp/uart_fix/stub.sh && " +
+                    "mount -o bind /data/local/tmp/uart_fix/stub.sh /system/bin/start_uart2serport.sh 2>/dev/null");
+                // Restart service into running state
+                ShellUtils.execRoot("setprop ctl.restart uart2serport");
+            }
         }
-        // 2. Google Stack
+        // 2. Google Stack (respect per-package selection)
         if ("0".equals(cfg.getProperty("GOOGLE_STACK"))) {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.GOOGLE_PKGS, true));
+            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", true);
+            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
             ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.GOOGLE_PKGS, false));
         }
-        // 3. Bigme Bloat
+        // 3. Bigme Bloat (respect per-package selection)
         if ("0".equals(cfg.getProperty("BIGME_BLOAT"))) {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.BIGME_PKGS, true));
+            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", true);
+            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
             ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.BIGME_PKGS, false));
         }
-        // 4. MTK Cellular
+        // 4. MTK Cellular (respect per-package selection)
         if ("0".equals(cfg.getProperty("MTK_CELLULAR"))) {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.MTK_PKGS, true));
+            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", true);
+            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
             ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.MTK_PKGS, false));
         }
-        // 5. AOSP Stubs
+        // 5. AOSP Stubs (respect per-package selection)
         if ("0".equals(cfg.getProperty("AOSP_STUBS"))) {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.AOSP_PKGS, true));
+            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", true);
+            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
             ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.AOSP_PKGS, false));
         }
@@ -108,18 +122,23 @@ public class BootReceiver extends BroadcastReceiver {
         String hotplug4   = cfg.getProperty("HOTPLUG_4_CORES", "0");
         ShellUtils.execRoot(ConfigManager.buildGovernorCmd(govProfile, hotplug4));
 
-        // 11. WiFi Sleep Zero
+        // 11. Sleep Governor Service (screen-off CPU frequency scaling)
+        if ("1".equals(cfg.getProperty("SLEEP_GOVERNOR_ENABLED", "1"))) {
+            HiBigApp.registerScreenReceiver();
+        }
+
+        // 12. WiFi Sleep Zero
         if ("1".equals(cfg.getProperty("WIFI_SLEEP_ZERO"))) {
             ShellUtils.execRoot("settings put global wifi_sleep_policy 0 2>/dev/null; " +
                 "settings put global wifi_idle_ms 5000 2>/dev/null; " +
                 "settings put global wifi_scan_always_enabled 0 2>/dev/null; " +
                 "cmd wifi set-scan-always-available 0 2>/dev/null");
         }
-        // 11. Battery Cap
+        // 13. Battery Cap 85%
         if ("1".equals(cfg.getProperty("BATTERY_CAP_85"))) {
             ShellUtils.execRoot("echo 85 > /sys/class/power_supply/battery/charging_limit 2>/dev/null");
         }
-        // 12. Animations
+        // 14. Animations
         if ("1".equals(cfg.getProperty("DISABLE_ANIMATIONS"))) {
             ShellUtils.execRoot("settings put global window_animation_scale 0.0 2>/dev/null; " +
                 "settings put global transition_animation_scale 0.0 2>/dev/null; " +
@@ -127,14 +146,31 @@ public class BootReceiver extends BroadcastReceiver {
                 "settings put global disable_window_blurs 1 2>/dev/null; " +
                 "setprop persist.sys.sf.disable_blurs 1 2>/dev/null");
         }
-        // Auto-shutdown daemon
-        if ("1".equals(cfg.getProperty("AUTO_SHUTDOWN_ENABLED"))) {
-            String timeout = cfg.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120");
-            ShellUtils.execRoot("[ -f /data/local/tmp/autoshutdown.pid ] && kill -9 $(cat /data/local/tmp/autoshutdown.pid 2>/dev/null) 2>/dev/null; rm -f /data/local/tmp/autoshutdown.pid; " +
-                "nohup sh " + ConfigManager.SHUTDOWN_SCRIPT + " " + timeout +
-                " > /data/local/tmp/autoshutdown.log 2>&1 &");
+        // 14b. No Background Processes
+        if ("1".equals(cfg.getProperty("NO_BACKGROUNDS"))) {
+            ShellUtils.execRoot("settings put global background_process_limit 0 2>/dev/null");
         }
-        // 13. Reapply user restricted packages (AppOps & Standby Buckets)
+        // 15. Auto-shutdown alarm (zero-drain, AlarmManager-based)
+        if ("1".equals(cfg.getProperty("AUTO_SHUTDOWN_ENABLED"))) {
+            ShutdownAlarmReceiver.scheduleAlarmWithConfig(context);
+            ShellUtils.appendLog("auto-shutdown alarm scheduled at boot");
+        } else {
+            ShutdownAlarmReceiver.cancelAlarm(context);
+        }
+        // 16. Suspend failure reduction (Optimization #3)
+        if ("1".equals(cfg.getProperty("KILL_SHUTDOWN_ALARM"))) {
+            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
+        }
+        if ("1".equals(cfg.getProperty("SUPPRESS_JS_IDLE"))) {
+            ShellUtils.execRoot(ConfigManager.getSuppressJsIdleCmd(true));
+        }
+        if ("1".equals(cfg.getProperty("WIDE_ALARM_FUZZ"))) {
+            ShellUtils.execRoot(ConfigManager.getWideAlarmFuzzCmd(true));
+        }
+        if ("1".equals(cfg.getProperty("INSTANT_LOCK"))) {
+            ShellUtils.execRoot(ConfigManager.getInstantLockCmd(true));
+        }
+        // 17. Reapply user restricted packages (AppOps & Standby Buckets)
         java.util.Set<String> restricted = ConfigManager.loadRestrictedPkgs();
         for (String rPkg : restricted) {
             ShellUtils.execRoot(ConfigManager.buildRestrictCmd(rPkg));
@@ -142,27 +178,7 @@ public class BootReceiver extends BroadcastReceiver {
         ShellUtils.appendLog("=== BootReceiver: all rules applied ===");
     }
 
-    private void installAutoShutdown(Context context) {
-        try {
-            java.io.InputStream is = context.getAssets().open("auto_shutdown.sh");
-            java.io.File internalFile = new java.io.File(context.getFilesDir(), "auto_shutdown.sh");
-            if (internalFile.getParentFile() != null && !internalFile.getParentFile().exists()) {
-                internalFile.getParentFile().mkdirs();
-            }
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(internalFile);
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
-            is.close();
-            fos.close();
-            ShellUtils.execRoot("cp " + internalFile.getAbsolutePath() + " " + ConfigManager.SHUTDOWN_SCRIPT +
-                " && chmod 755 " + ConfigManager.SHUTDOWN_SCRIPT);
-        } catch (Exception e) {
-            ShellUtils.appendLog("installAutoShutdown error: " + e.getMessage());
-        }
-    }
-
     private void writeBootTime() {
-        ShellUtils.exec("date '+%Y-%m-%d %H:%M' > " + ConfigManager.BOOT_TS_PATH);
+        ShellUtils.execRoot("date '+%Y-%m-%d %H:%M' > " + ConfigManager.BOOT_TS_PATH);
     }
 }

@@ -42,6 +42,9 @@ public class MainActivity extends Activity {
     private String debloatSearch = "";
     private Runnable searchDebounceRunnable = null;
     private List<AppItem> cachedAppItems = null;
+    private boolean logDrawerVisible = false;
+    private TextView logDrawerView = null;   // live log view, hosted in the banner popup
+    private AlertDialog logDialog = null;    // currently-open log popup (if any)
     private Button tabSysBtn, tabAppsBtn, tabDiagBtn;
     private View tabSysIndicator, tabAppsIndicator, tabDiagIndicator;
 
@@ -87,6 +90,7 @@ public class MainActivity extends Activity {
         boolean isRestricted;
         int standbyBucket;
         boolean isDozeExempt;
+        boolean isSystemExcidle;
         AppItem(ApplicationInfo app, String label, String pkg, boolean isProt, boolean isEnabled, boolean isSystem, boolean isRestricted, int standbyBucket, boolean isDozeExempt) {
             this.app = app;
             this.label = label;
@@ -112,7 +116,8 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 ShellUtils.execRoot("touch " + ShellUtils.LOG_PATH + " && chmod 666 " + ShellUtils.LOG_PATH + " 2>/dev/null");
-                installAutoShutdownScript();
+                ShellUtils.execRoot("appops set com.right9code.hibigzero SYSTEM_ALERT_WINDOW allow 2>/dev/null; " +
+                    "pm grant com.right9code.hibigzero android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null");
                 ShellUtils.appendLog("HiBreak Manager v2.0 launched (right9code)");
             }
         }).start();
@@ -127,12 +132,62 @@ public class MainActivity extends Activity {
         header.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
         header.setBackgroundColor(Color.BLACK);
 
+        // ── Top row: title + compact, muted log trigger (top-right) ────────
+        LinearLayout headerTop = new LinearLayout(this);
+        headerTop.setOrientation(LinearLayout.HORIZONTAL);
+        headerTop.setGravity(Gravity.CENTER_VERTICAL);
+
         TextView title = new TextView(this);
-        title.setText("HIBIG ZERO  v1.0.0");
+        title.setText("HiBiG ZERO  v1.3.0");
         setSp(title, 15);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(Color.WHITE);
-        header.addView(title);
+        title.setLayoutParams(new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        headerTop.addView(title);
+
+        Button updateBtn = new Button(this);
+        updateBtn.setText("UPDATE");
+        updateBtn.setTypeface(Typeface.DEFAULT);
+        setSp(updateBtn, 9);
+        updateBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+        updateBtn.setTextColor(Color.BLACK);
+        updateBtn.setPadding(dpToPx(8), dpToPx(2), dpToPx(8), dpToPx(2));
+        updateBtn.setMinimumHeight(0);
+        updateBtn.setMinimumWidth(0);
+        updateBtn.setMinWidth(0);
+        updateBtn.setMinHeight(0);
+        LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ulp.setMarginEnd(dpToPx(6));
+        updateBtn.setLayoutParams(ulp);
+        updateBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showUpdateDialog();
+            }
+        });
+        headerTop.addView(updateBtn);
+
+        Button logBtn = new Button(this);
+        logBtn.setText("LOG");
+        logBtn.setTypeface(Typeface.DEFAULT);
+        setSp(logBtn, 9);
+        logBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, 0));
+        logBtn.setTextColor(Color.BLACK);
+        logBtn.setPadding(dpToPx(8), dpToPx(2), dpToPx(8), dpToPx(2));
+        logBtn.setMinimumHeight(0);
+        logBtn.setMinimumWidth(0);
+        logBtn.setMinWidth(0);
+        logBtn.setMinHeight(0);
+        logBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showLogPopup();
+            }
+        });
+        headerTop.addView(logBtn);
+        header.addView(headerTop);
 
         TextView author = new TextView(this);
         author.setText("by right9code");
@@ -234,36 +289,16 @@ public class MainActivity extends Activity {
         if (searchDebounceRunnable != null) mainHandler.removeCallbacks(searchDebounceRunnable);
     }
 
-    // ── Install auto_shutdown.sh from assets ─────────────────────────────────
-    private void installAutoShutdownScript() {
-        try {
-            java.io.InputStream is = getAssets().open("auto_shutdown.sh");
-            java.io.File internalFile = new java.io.File(getFilesDir(), "auto_shutdown.sh");
-            if (internalFile.getParentFile() != null && !internalFile.getParentFile().exists()) {
-                internalFile.getParentFile().mkdirs();
-            }
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(internalFile);
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
-            is.close();
-            fos.close();
-            ShellUtils.execRoot("cp " + internalFile.getAbsolutePath() + " " + ConfigManager.SHUTDOWN_SCRIPT +
-                " && chmod 755 " + ConfigManager.SHUTDOWN_SCRIPT);
-            ShellUtils.appendLog("auto_shutdown.sh installed to " + ConfigManager.SHUTDOWN_SCRIPT);
-        } catch (Exception e) {
-            ShellUtils.appendLog("auto_shutdown.sh install err: " + e.getMessage());
-        }
-    }
-
+    // ── Auto-shutdown timeout ──────────────────────────────────────────────
     private void applyTimeoutValue(String mins, TextView tVal, TextView logDrawer) {
         currentConfig.setProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", mins);
         ConfigManager.saveConfig(currentConfig);
         if (tVal != null) tVal.setText(mins + " MIN");
         if ("1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "1"))) {
-            ShellUtils.execRoot("[ -f /data/local/tmp/autoshutdown.pid ] && kill -9 $(cat /data/local/tmp/autoshutdown.pid 2>/dev/null) 2>/dev/null; rm -f /data/local/tmp/autoshutdown.pid; " +
-                "nohup sh " + ConfigManager.SHUTDOWN_SCRIPT + " " + mins +
-                " > /data/local/tmp/autoshutdown.log 2>&1 &");
+            // Reschedule alarm with new timeout
+            long minsLong = 120;
+            try { minsLong = Long.parseLong(mins); } catch (Exception ignored) {}
+            ShutdownAlarmReceiver.scheduleAlarm(this, minsLong * 60 * 1000L);
         }
         ShellUtils.appendLog("Auto-shutdown timeout set to: " + mins + " min");
         if (logDrawer != null && logDrawer.getVisibility() == View.VISIBLE) {
@@ -373,55 +408,22 @@ public class MainActivity extends Activity {
     // TAB 1: SYSTEM CONTROLS
     // ─────────────────────────────────────────────────────────────────────────
     private void renderSystemControls() {
-        // ── Log drawer (collapsible, hidden by default with crisp 2px border) ──
-        final LinearLayout logContainer = new LinearLayout(this);
-        logContainer.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams logLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        logLp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(8));
-        logContainer.setLayoutParams(logLp);
-        logContainer.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
-        logContainer.setVisibility(View.GONE);
-
-        TextView logHeader = new TextView(this);
-        logHeader.setText("-- LIVE SYSTEM LOG --");
-        logHeader.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(logHeader, 11);
-        logHeader.setTextColor(Color.WHITE);
-        logHeader.setBackgroundColor(Color.BLACK);
-        logHeader.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
-        logContainer.addView(logHeader);
-
-        final TextView logDrawer = new TextView(this);
-        logDrawer.setTypeface(Typeface.DEFAULT);
-        setSp(logDrawer, 10);
-        logDrawer.setTextColor(Color.BLACK);
-        logDrawer.setBackgroundColor(Color.WHITE);
-        logDrawer.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
-        logDrawer.setText("(log appears after first toggle)");
-        logContainer.addView(logDrawer);
-
-        final Button logToggle = new Button(this);
-        LinearLayout.LayoutParams ltlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ltlp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
-        logToggle.setLayoutParams(ltlp);
-        logToggle.setText("[>>] SHOW LOG");
-        logToggle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(logToggle, 11);
-        logToggle.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
-        logToggle.setTextColor(Color.BLACK);
-        logToggle.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (logContainer.getVisibility() == View.GONE) {
-                    logContainer.setVisibility(View.VISIBLE);
-                    logDrawer.setText(ShellUtils.readLog(15));
-                    logToggle.setText("[<<] HIDE LOG");
-                } else {
-                    logContainer.setVisibility(View.GONE);
-                    logToggle.setText("[>>] SHOW LOG");
-                }
-            }
-        });
+        // ── Live log view (persistent; displayed in the banner popup, not inline) ──
+        if (logDrawerView == null) {
+            logDrawerView = new TextView(this);
+            logDrawerView.setTypeface(Typeface.DEFAULT);
+            setSp(logDrawerView, 10);
+            logDrawerView.setTextColor(Color.BLACK);
+            logDrawerView.setBackgroundColor(Color.WHITE);
+            logDrawerView.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
+        }
+        // Re-render on tab switch can discard the view's parent; keep it reusable.
+        if (logDrawerView.getParent() != null) {
+            ((ViewGroup) logDrawerView.getParent()).removeView(logDrawerView);
+        }
+        logDrawerView.setVisibility(View.GONE);
+        logDrawerView.setText("(log appears after first toggle)");
+        final TextView logDrawer = logDrawerView;
 
         // ── Section: HARDWARE ──────────────────────────────────────────────
         addSectionHeader("HARDWARE");
@@ -460,34 +462,38 @@ public class MainActivity extends Activity {
             "settings get global window_animation_scale",
             logDrawer);
 
+        addToggle("NO_BACKGROUNDS", "NO_BACKGROUNDS",
+            "Kill all background processes (Developer Options limit 0)",
+            false,
+            "settings put global background_process_limit 0 2>/dev/null",
+            "settings put global background_process_limit -1 2>/dev/null",
+            "settings get global background_process_limit",
+            logDrawer);
+
         // ── Section: DEBLOAT ───────────────────────────────────────────────
         addSectionHeader("DEBLOAT");
 
-        addToggle("GOOGLE_STACK", "GOOGLE_STACK",
+        addDebloatToggle("GOOGLE_STACK", "GOOGLE_STACK", "GOOGLE_PKGS_SEL",
             "Freeze Play Services & GSF (cloud socket wakeups)",
-            true,
-            frGoogle, unGoogle,
+            ConfigManager.GOOGLE_PKGS,
             "pm list packages -d 2>/dev/null | grep -q com.google.android.gms && echo FROZEN || echo ACTIVE",
             logDrawer);
 
-        addToggle("BIGME_BLOAT", "BIGME_BLOAT",
+        addDebloatToggle("BIGME_BLOAT", "BIGME_BLOAT", "BIGME_PKGS_SEL",
             "Freeze 15 Bigme AI, cloud, store, demo daemons",
-            true,
-            frBigme, unBigme,
+            ConfigManager.BIGME_PKGS,
             "pm list packages -d 2>/dev/null | grep -q com.xrz.ai && echo FROZEN || echo ACTIVE",
             logDrawer);
 
-        addToggle("MTK_CELLULAR", "MTK_CELLULAR",
+        addDebloatToggle("MTK_CELLULAR", "MTK_CELLULAR", "MTK_PKGS_SEL",
             "Disable baseband IMS, telephony, sim services",
-            true,
-            frMtk, unMtk,
+            ConfigManager.MTK_PKGS,
             "pm list packages -d 2>/dev/null | grep -q com.mediatek.ims && echo FROZEN || echo ACTIVE",
             logDrawer);
 
-        addToggle("AOSP_STUBS", "AOSP_STUBS",
+        addDebloatToggle("AOSP_STUBS", "AOSP_STUBS", "AOSP_PKGS_SEL",
             "Freeze dialer, telecom, print spooler, MMS provider",
-            true,
-            frAosp, unAosp,
+            ConfigManager.AOSP_PKGS,
             "pm list packages -d 2>/dev/null | grep -q com.android.phone && echo FROZEN || echo ACTIVE",
             logDrawer);
 
@@ -529,42 +535,43 @@ public class MainActivity extends Activity {
             "cat /proc/ppm/policy_status 2>/dev/null | grep -q 'PPM_POLICY_USER_LIMIT: enabled' && echo 'LOCKED_2.06G' || echo 'UNCAPPED_DYNAMIC'",
             logDrawer);
 
-        // Governor Profile selector
-        LinearLayout profileRow = new LinearLayout(this);
-        profileRow.setOrientation(LinearLayout.HORIZONTAL);
-        profileRow.setGravity(Gravity.CENTER_VERTICAL);
-        profileRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-        profileRow.setBackgroundColor(Color.WHITE);
+        // ── WAKE GOVERNOR selector (screen-on profile)
+        LinearLayout wakeRow = new LinearLayout(this);
+        wakeRow.setOrientation(LinearLayout.HORIZONTAL);
+        wakeRow.setGravity(Gravity.CENTER_VERTICAL);
+        wakeRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+        wakeRow.setBackgroundColor(Color.WHITE);
 
-        TextView pLabel = new TextView(this);
-        pLabel.setText("PROFILE: ");
-        pLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(pLabel, 11);
-        pLabel.setTextColor(Color.BLACK);
+        TextView wakeLabel = new TextView(this);
+        wakeLabel.setText("WAKE GOV: ");
+        wakeLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(wakeLabel, 11);
+        wakeLabel.setTextColor(Color.BLACK);
 
-        final TextView pVal = new TextView(this);
-        pVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient")));
-        pVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(pVal, 11);
-        pVal.setTextColor(Color.BLACK);
+        final TextView wakeVal = new TextView(this);
+        wakeVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient")));
+        wakeVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(wakeVal, 11);
+        wakeVal.setTextColor(Color.BLACK);
 
-        Button changeProfile = new Button(this);
-        changeProfile.setText("[CHANGE]");
-        changeProfile.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(changeProfile, 11);
-        changeProfile.setBackgroundColor(Color.BLACK);
-        changeProfile.setTextColor(Color.WHITE);
-        changeProfile.setOnClickListener(new View.OnClickListener() {
+        Button changeWake = new Button(this);
+        changeWake.setText("[CHANGE]");
+        changeWake.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(changeWake, 11);
+        changeWake.setBackgroundColor(Color.BLACK);
+        changeWake.setTextColor(Color.WHITE);
+        changeWake.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 final String[] opts = {
-                    "Balanced Efficient (900MHz - 2.2GHz on demand)",
-                    "E-Reader Battery (900MHz - 1.35GHz, 4 Cores)",
+                    "Balanced Efficient (900-2200MHz, 8 Cores)",
+                    "E-Reader Battery (900-1351MHz, 4 Cores)",
+                    "Deep Sleep (900/400MHz Locked, 4 Cores)",
                     "Stock MediaTek (factory 2.06GHz lock)"
                 };
-                final String[] vals = {"schedutil_efficient", "ereader_battery", "stock"};
+                final String[] vals = {"schedutil_efficient", "ereader_battery", "deep_sleep", "stock"};
                 new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("CPU GOVERNOR PROFILE")
+                    .setTitle("WAKE GOVERNOR (Screen On)")
                     .setItems(opts, new DialogInterface.OnClickListener() {
                         @Override
                         public void onClick(DialogInterface d, int which) {
@@ -574,9 +581,9 @@ public class MainActivity extends Activity {
                                 currentConfig.setProperty("HOTPLUG_4_CORES", "1");
                             }
                             ConfigManager.saveConfig(currentConfig);
-                            pVal.setText(ConfigManager.getGovernorLabel(selected));
+                            wakeVal.setText(ConfigManager.getGovernorLabel(selected));
                             ShellUtils.execRoot(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
-                            ShellUtils.appendLog("CPU Governor set to: " + selected);
+                            ShellUtils.appendLog("Wake Governor set to: " + selected);
                             if (logDrawer.getVisibility() == View.VISIBLE) {
                                 logDrawer.setText(ShellUtils.readLog(15));
                             }
@@ -585,17 +592,92 @@ public class MainActivity extends Activity {
             }
         });
 
-        profileRow.addView(pLabel);
-        profileRow.addView(pVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-        profileRow.addView(changeProfile);
-        addSectionContent(profileRow);
+        wakeRow.addView(wakeLabel);
+        wakeRow.addView(wakeVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        wakeRow.addView(changeWake);
+        addSectionContent(wakeRow);
 
-        addToggle("4_CORE_MODE", "HOTPLUG_4_CORES",
-            "Power down Cores 4-7 to reduce silicon leakage (Auto-enforced in E-Reader Battery)",
+        TextView wakeDesc = new TextView(this);
+        wakeDesc.setText("CPU profile applied when screen is ON. Controls performance during active use.");
+        setSp(wakeDesc, 10);
+        wakeDesc.setTypeface(Typeface.DEFAULT);
+        wakeDesc.setTextColor(Color.BLACK);
+        wakeDesc.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
+        addSectionContent(wakeDesc);
+
+        // ── SLEEP GOVERNOR selector (screen-off profile)
+        LinearLayout sleepRow = new LinearLayout(this);
+        sleepRow.setOrientation(LinearLayout.HORIZONTAL);
+        sleepRow.setGravity(Gravity.CENTER_VERTICAL);
+        sleepRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+        sleepRow.setBackgroundColor(Color.WHITE);
+
+        TextView sleepLabel = new TextView(this);
+        sleepLabel.setText("SLEEP GOV: ");
+        sleepLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(sleepLabel, 11);
+        sleepLabel.setTextColor(Color.BLACK);
+
+        final TextView sleepVal = new TextView(this);
+        sleepVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("SLEEP_GOVERNOR", "ereader_battery")));
+        sleepVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(sleepVal, 11);
+        sleepVal.setTextColor(Color.BLACK);
+
+        Button changeSleep = new Button(this);
+        changeSleep.setText("[CHANGE]");
+        changeSleep.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(changeSleep, 11);
+        changeSleep.setBackgroundColor(Color.BLACK);
+        changeSleep.setTextColor(Color.WHITE);
+        changeSleep.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                final String[] opts = {
+                    "Deep Sleep (900/400MHz Locked, 4 Cores)",
+                    "E-Reader Battery (900-1351MHz, 4 Cores)",
+                    "Balanced Efficient (900-2200MHz, 8 Cores)",
+                    "Stock MediaTek (factory 2.06GHz lock)"
+                };
+                final String[] vals = {"deep_sleep", "ereader_battery", "schedutil_efficient", "stock"};
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("SLEEP GOVERNOR (Screen Off)")
+                    .setItems(opts, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            String selected = vals[which];
+                            currentConfig.setProperty("SLEEP_GOVERNOR", selected);
+                            ConfigManager.saveConfig(currentConfig);
+                            sleepVal.setText(ConfigManager.getGovernorLabel(selected));
+                            ShellUtils.appendLog("Sleep Governor set to: " + selected);
+                            if (logDrawer.getVisibility() == View.VISIBLE) {
+                                logDrawer.setText(ShellUtils.readLog(15));
+                            }
+                        }
+                    }).show();
+            }
+        });
+
+        sleepRow.addView(sleepLabel);
+        sleepRow.addView(sleepVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        sleepRow.addView(changeSleep);
+        addSectionContent(sleepRow);
+
+        TextView sleepDesc = new TextView(this);
+        sleepDesc.setText("CPU profile applied when screen turns OFF. Lower = more battery savings while idle.");
+        setSp(sleepDesc, 10);
+        sleepDesc.setTypeface(Typeface.DEFAULT);
+        sleepDesc.setTextColor(Color.BLACK);
+        sleepDesc.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
+        addSectionContent(sleepDesc);
+
+        // ── SLEEP GOVERNOR AUTO-TOGGLE (enable/disable auto-switching)
+        addToggle("SLEEP GOV AUTO", "SLEEP_GOVERNOR_ENABLED",
+            "Auto-switch between Wake/Sleep profiles on screen on/off. Disable to use manual governor only.",
             false,
-            ConfigManager.buildHotplugCmd(true),
-            ConfigManager.buildHotplugCmd(false),
-            "[ \"$(cat /sys/devices/system/cpu/online 2>/dev/null)\" = '0-3' ] && echo '4_CORES' || echo '8_CORES'",
+            "",
+            "",
+            "dumpsys activity services com.right9code.hibigzero 2>/dev/null | grep -q 'HiBigApp' && echo ACTIVE || echo CHECKING",
             logDrawer);
 
         addToggle("AGGRESSIVE_DOZE", "AGGRESSIVE_DOZE",
@@ -617,10 +699,18 @@ public class MainActivity extends Activity {
         addToggle("AUTO_SHUTDOWN", "AUTO_SHUTDOWN_ENABLED",
             "Clean reboot -p after inactivity (E-ink retains at 0 mA)",
             false,
-            "[ -f /data/local/tmp/autoshutdown.pid ] && kill -9 $(cat /data/local/tmp/autoshutdown.pid 2>/dev/null) 2>/dev/null; rm -f /data/local/tmp/autoshutdown.pid; nohup sh " + ConfigManager.SHUTDOWN_SCRIPT + " $(grep AUTO_SHUTDOWN_TIMEOUT_MIN " + ConfigManager.CONF_PATH + " | cut -d= -f2) > /data/local/tmp/autoshutdown.log 2>&1 &",
-            "[ -f /data/local/tmp/autoshutdown.pid ] && kill -9 $(cat /data/local/tmp/autoshutdown.pid 2>/dev/null) 2>/dev/null; rm -f /data/local/tmp/autoshutdown.pid",
-            "[ -f /data/local/tmp/autoshutdown.pid ] && kill -0 $(cat /data/local/tmp/autoshutdown.pid 2>/dev/null) 2>/dev/null && echo DAEMON_RUNNING || echo STOPPED",
-            logDrawer);
+            "", "", "",
+            logDrawer,
+            new Runnable() {
+                @Override
+                public void run() {
+                    if ("1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "1"))) {
+                        ShutdownAlarmReceiver.scheduleAlarmWithConfig(MainActivity.this);
+                    } else {
+                        ShutdownAlarmReceiver.cancelAlarm(MainActivity.this);
+                    }
+                }
+            });
 
         // Timeout selector
         LinearLayout timeoutRow = new LinearLayout(this);
@@ -701,6 +791,42 @@ public class MainActivity extends Activity {
         timeoutRow.addView(changeTimer);
         addSectionContent(timeoutRow);
 
+        // ── Section: SUSPEND (Optimization #3) ─────────────────────────────
+        addSectionHeader("SUSPEND",
+            "Reduce suspend failures by blocking alarm wakeups during freeze");
+
+        addToggle("KILL_SHUTDOWN", "KILL_SHUTDOWN_ALARM",
+            "Disable Bigme PowersaveShutDownAlarmReceiver & Intent Firewall block",
+            false,
+            ConfigManager.getKillShutdownAlarmCmd(true),
+            ConfigManager.getKillShutdownAlarmCmd(false),
+            "[ -f /data/system/ifw/block_bigme_shutdown.xml ] && echo BLOCKED || echo ACTIVE",
+            logDrawer);
+
+        addToggle("JS_IDLE", "SUPPRESS_JS_IDLE",
+            "Cancel JobScheduler idle alarms & raise idle threshold to 99",
+            false,
+            ConfigManager.getSuppressJsIdleCmd(true),
+            ConfigManager.getSuppressJsIdleCmd(false),
+            "device_config get jobscheduler min_ready_non_active_jobs_count 2>/dev/null | grep -q 99 && echo THROTTLED || echo DEFAULT",
+            logDrawer);
+
+        addToggle("WIDE_FUZZ", "WIDE_ALARM_FUZZ",
+            "Widen alarm batching: 10min min fuzz, 45min max fuzz, skip TIME_TICK idle",
+            false,
+            ConfigManager.getWideAlarmFuzzCmd(true),
+            ConfigManager.getWideAlarmFuzzCmd(false),
+            "device_config get alarm_manager min_device_idle_fuzz 2>/dev/null | grep -q 600000 && echo WIDE || echo DEFAULT",
+            logDrawer);
+
+        addToggle("INSTANT_LOCK", "INSTANT_LOCK",
+            "Lock screen instantly on power-off (kills DELAYED_KEYGUARD alarm race)",
+            false,
+            ConfigManager.getInstantLockCmd(true),
+            ConfigManager.getInstantLockCmd(false),
+            "settings get secure lock_screen_lock_after_timeout | grep -q 0 && echo INSTANT || echo DELAYED",
+            logDrawer);
+
         // ── APPLY ALL button (with confirmation dialog) ─────────────────────
         final Button applyBtn = new Button(this);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -745,11 +871,156 @@ public class MainActivity extends Activity {
                     .show();
             }
         });
-        addSectionContent(applyBtn);
 
-        // ── Log drawer (collapsible) ───────────────────────────────────────
-        addSectionContent(logToggle);
-        addSectionContent(logContainer);
+        // ── Section: APPS ───────────────────────────────────────────────
+        addSectionHeader("APPS");
+        addAppInstallerCards(logDrawer);
+
+        // ── APPLY ALL (pinned to the very bottom of the SYSTEM tab) ──────
+        addSectionContent(applyBtn);
+    }
+
+    /** Open the live system log as a popup from the banner. */
+    private void showLogPopup() {
+        if (logDrawerView == null) return;
+        // Reuse the persistent log view; detach it from any previous popup first.
+        if (logDrawerView.getParent() != null) {
+            ((ViewGroup) logDrawerView.getParent()).removeView(logDrawerView);
+        }
+        logDrawerView.setVisibility(View.VISIBLE);
+        logDrawerView.setText(ShellUtils.readLog(30));
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(logDrawerView);
+
+        if (logDialog != null && logDialog.isShowing()) logDialog.dismiss();
+        logDialog = new AlertDialog.Builder(this)
+            .setTitle("-- LIVE SYSTEM LOG --")
+            .setView(scroller)
+            .setPositiveButton("CLOSE", null)
+            .create();
+        logDialog.setOnDismissListener(new DialogInterface.OnDismissListener() {
+            @Override
+            public void onDismiss(DialogInterface d) {
+                logDrawerVisible = false;
+                if (logDrawerView != null) logDrawerView.setVisibility(View.GONE);
+                logDialog = null;
+            }
+        });
+        logDrawerVisible = true;
+        logDialog.show();
+    }
+
+    /** Open update dialog and check for latest HiBig Zero release from GitHub. */
+    private void showUpdateDialog() {
+        final TextView msgView = new TextView(this);
+        msgView.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
+        setSp(msgView, 11);
+        msgView.setTextColor(Color.BLACK);
+        msgView.setText("Checking GitHub for HiBig Zero updates...\nTarget: " + Updater.REPO);
+
+        ScrollView scroller = new ScrollView(this);
+        scroller.addView(msgView);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle("HiBig Zero Update")
+            .setView(scroller)
+            .setNegativeButton("CLOSE", null)
+            .create();
+        dialog.show();
+
+        Updater.check(this, new Updater.UpdateListener() {
+            @Override
+            public void onChecking() {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (dialog.isShowing()) {
+                            msgView.setText("Connecting to GitHub API...\nChecking releases for " + Updater.REPO);
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public void onUpToDate(final String currentVersion, final String latestVersion, final Runnable forceInstall) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!dialog.isShowing()) return;
+                        msgView.setText("HiBig Zero is up to date!\n\n" +
+                            "• Installed version: v" + currentVersion + "\n" +
+                            "• Latest release:    v" + latestVersion + "\n\n" +
+                            "Would you like to reinstall v" + latestVersion + "?");
+                        dialog.setButton(DialogInterface.BUTTON_POSITIVE, "REINSTALL", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                msgView.setText("Starting download for v" + latestVersion + "...");
+                                forceInstall.run();
+                            }
+                        });
+                    }
+                });
+            }
+
+            @Override
+            public void onUpdateAvailable(final String currentVersion, final String latestVersion,
+                                          final String releaseNotes, final Runnable proceed) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!dialog.isShowing()) return;
+                        String notes = releaseNotes.length() > 600
+                            ? releaseNotes.substring(0, 600) + "..." : releaseNotes;
+                        msgView.setText("New version available!\n\n" +
+                            "• Installed version: v" + currentVersion + "\n" +
+                            "• Latest version:    v" + latestVersion + "\n\n" +
+                            "Release Notes:\n" + (notes.isEmpty() ? "(No notes)" : notes));
+                        dialog.setButton(DialogInterface.BUTTON_POSITIVE, "UPDATE NOW", new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                msgView.setText("Starting download for v" + latestVersion + "...");
+                                proceed.run();
+                            }
+                        });
+                    }
+                });
+            }
+
+            @Override
+            public void onProgress(final String message, final int percent) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (dialog.isShowing()) {
+                            msgView.setText("Progress: " + message + (percent > 0 ? " (" + percent + "%)" : ""));
+                        }
+                        if (logDrawerView != null) {
+                            logDrawerView.setText("Updater: " + message);
+                        }
+                    }
+                });
+            }
+
+            @Override
+            public void onCompleted(final boolean success, final String message) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!dialog.isShowing()) return;
+                        msgView.setText((success ? "[SUCCESS]\n\n" : "[FAILED]\n\n") + message);
+                        if (success) {
+                            dialog.setButton(DialogInterface.BUTTON_POSITIVE, "RELAUNCH", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface d, int which) {
+                                    ShellUtils.execRoot("am start -n com.right9code.hibigzero/.MainActivity");
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+        });
     }
 
     // Active target for section content. When null, content goes to contentContainer.
@@ -832,6 +1103,13 @@ public class MainActivity extends Activity {
                            final boolean inverted,
                            final String onCmd, final String offCmd, final String verifyCmd,
                            final TextView logDrawer) {
+        addToggle(label, configKey, desc, inverted, onCmd, offCmd, verifyCmd, logDrawer, null);
+    }
+
+    private void addToggle(final String label, final String configKey, String desc,
+                           final boolean inverted,
+                           final String onCmd, final String offCmd, final String verifyCmd,
+                           final TextView logDrawer, final Runnable onPostToggle) {
 
         final String val = currentConfig.getProperty(configKey, inverted ? "0" : "1");
         final boolean initialOn = inverted ? "0".equals(val) : "1".equals(val);
@@ -918,6 +1196,9 @@ public class MainActivity extends Activity {
                         }
                     }).start();
                 }
+                if (onPostToggle != null) {
+                    onPostToggle.run();
+                }
             }
         };
 
@@ -941,6 +1222,647 @@ public class MainActivity extends Activity {
             pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
             pillBtn.setTextColor(Color.BLACK);
         }
+    }
+
+    // ── addDebloatToggle: toggle + per-package checkbox selector ──────────
+    /**
+     * Creates a debloat toggle card with a [SELECT] button that expands a
+     * per-package checkbox list underneath. Only checked packages are
+     * frozen when the toggle is turned ON.
+     *
+     * @param label      Display name (e.g. "GOOGLE_STACK")
+     * @param configKey  Config key for ON/OFF state (e.g. "GOOGLE_STACK")
+     * @param selKey     Config key for package selection (e.g. "GOOGLE_PKGS_SEL")
+     * @param desc       Description text
+     * @param pkgList    Space-separated package list from ConfigManager
+     * @param verifyCmd  Verification command for the toggle
+     * @param logDrawer  Log drawer to update
+     */
+    private void addDebloatToggle(final String label, final String configKey,
+                                  final String selKey, String desc,
+                                  final String pkgList, final String verifyCmd,
+                                  final TextView logDrawer) {
+
+        final String allPkgs[] = ConfigManager.splitPkgList(pkgList);
+
+        // Read initial ON/OFF state (inverted: "1" means OFF for debloat toggles)
+        final String val = currentConfig.getProperty(configKey, "0");
+        final boolean initialOn = "0".equals(val);
+        final boolean[] stateHolder = new boolean[] { initialOn };
+
+        // ── Main card ──────────────────────────────────────────────────────
+        final LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        // Top row: title + pill button
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tTitle = new TextView(this);
+        tTitle.setLayoutParams(new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tTitle.setText(label);
+        setSp(tTitle, 12);
+        tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tTitle.setTextColor(Color.BLACK);
+
+        // ON/OFF pill
+        final TextView pillBtn = new TextView(this);
+        pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pillBtn, 12);
+        pillBtn.setGravity(Gravity.CENTER);
+        pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+        updatePillView(pillBtn, initialOn);
+
+        topRow.addView(tTitle);
+        topRow.addView(pillBtn);
+        card.addView(topRow);
+
+        // Description
+        TextView tDesc = new TextView(this);
+        tDesc.setText(desc);
+        setSp(tDesc, 11);
+        tDesc.setTypeface(Typeface.DEFAULT);
+        tDesc.setTextColor(Color.BLACK);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
+        card.addView(tDesc);
+
+        // Count of selected packages
+        String[] initialSel = ConfigManager.getSelectedPkgs(currentConfig, pkgList, selKey);
+        final TextView countLabel = new TextView(this);
+        countLabel.setText(initialSel.length + "/" + allPkgs.length + " selected");
+        setSp(countLabel, 10);
+        countLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        countLabel.setTextColor(Color.BLACK);
+        countLabel.setPadding(0, dpToPx(2), 0, 0);
+        card.addView(countLabel);
+
+        addSectionContent(card);
+
+        // ── Collapsible package selector panel ─────────────────────────────
+        final LinearLayout selectorPanel = new LinearLayout(this);
+        selectorPanel.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        splp.setMargins(dpToPx(8), 0, dpToPx(8), dpToPx(4));
+        selectorPanel.setLayoutParams(splp);
+        selectorPanel.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        selectorPanel.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
+        selectorPanel.setVisibility(View.GONE);
+
+        // SELECT ALL / DESELECT ALL row
+        LinearLayout selBtnRow = new LinearLayout(this);
+        selBtnRow.setOrientation(LinearLayout.HORIZONTAL);
+        selBtnRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button selAllBtn = new Button(this);
+        selAllBtn.setText("[SELECT ALL]");
+        selAllBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(selAllBtn, 10);
+        styleEinkButton(selAllBtn, true);
+
+        Button deselAllBtn = new Button(this);
+        deselAllBtn.setText("[DESELECT ALL]");
+        deselAllBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(deselAllBtn, 10);
+        styleEinkButton(deselAllBtn, true);
+
+        LinearLayout.LayoutParams selBtnLp = new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        selBtnLp.setMargins(dpToPx(2), 0, dpToPx(2), 0);
+        selAllBtn.setLayoutParams(selBtnLp);
+        deselAllBtn.setLayoutParams(selBtnLp);
+
+        selBtnRow.addView(selAllBtn);
+        selBtnRow.addView(deselAllBtn);
+        selectorPanel.addView(selBtnRow);
+
+        // Build checkbox rows — track CheckBox references
+        final CheckBox[] pkgCheckBoxes = new CheckBox[allPkgs.length];
+
+        for (int i = 0; i < allPkgs.length; i++) {
+            final String pkg = allPkgs[i];
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dpToPx(4), dpToPx(3), dpToPx(4), dpToPx(3));
+
+            // Top: checkbox row
+            LinearLayout checkRow = new LinearLayout(this);
+            checkRow.setOrientation(LinearLayout.HORIZONTAL);
+            checkRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            // Determine initial state
+            boolean checked = false;
+            for (String s : initialSel) {
+                if (s.equals(pkg)) { checked = true; break; }
+            }
+
+            // E-ink checkbox style: [X] / [ ] marker
+            final TextView marker = new TextView(this);
+            marker.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(marker, 11);
+            marker.setPadding(dpToPx(4), 0, dpToPx(4), 0);
+            marker.setText(checked ? "[X]" : "[ ]");
+            marker.setTextColor(Color.BLACK);
+
+            CheckBox cb = new CheckBox(this);
+            cb.setText(pkg);
+            cb.setTypeface(Typeface.DEFAULT);
+            setSp(cb, 10);
+            cb.setTextColor(Color.BLACK);
+            cb.setButtonDrawable(null);
+            cb.setBackground(null);
+            cb.setChecked(checked);
+
+            cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    marker.setText(isChecked ? "[X]" : "[ ]");
+                    int count = 0;
+                    for (CheckBox cb : pkgCheckBoxes) {
+                        if (cb.isChecked()) count++;
+                    }
+                    countLabel.setText(count + "/" + allPkgs.length + " selected");
+                    saveCurrentSelection(pkgCheckBoxes, allPkgs, selKey);
+                }
+            });
+
+            checkRow.addView(marker);
+            checkRow.addView(cb);
+            row.addView(checkRow);
+
+            // Package description
+            String description = ConfigManager.PKG_DESCRIPTIONS.get(pkg);
+            if (description != null && !description.isEmpty()) {
+                TextView pkgDesc = new TextView(this);
+                pkgDesc.setText("  " + description);
+                setSp(pkgDesc, 9);
+                pkgDesc.setTypeface(Typeface.DEFAULT);
+                pkgDesc.setTextColor(Color.DKGRAY);
+                pkgDesc.setPadding(dpToPx(20), 0, 0, 0);
+                row.addView(pkgDesc);
+            }
+
+            selectorPanel.addView(row);
+            pkgCheckBoxes[i] = cb;
+        }
+
+        addSectionContent(selectorPanel);
+
+        // ── SELECT ALL handler ─────────────────────────────────────────────
+        selAllBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                for (CheckBox cb : pkgCheckBoxes) cb.setChecked(true);
+            }
+        });
+
+        // ── DESELECT ALL handler ───────────────────────────────────────────
+        deselAllBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                for (CheckBox cb : pkgCheckBoxes) cb.setChecked(false);
+            }
+        });
+
+        // ── Click on card (except pill) toggles package list dropdown ──────
+        final boolean[] panelVisible = new boolean[] { false };
+        View.OnClickListener togglePanel = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                panelVisible[0] = !panelVisible[0];
+                selectorPanel.setVisibility(panelVisible[0] ? View.VISIBLE : View.GONE);
+            }
+        };
+        card.setOnClickListener(togglePanel);
+        tTitle.setOnClickListener(togglePanel);
+        tDesc.setOnClickListener(togglePanel);
+        countLabel.setOnClickListener(togglePanel);
+
+        // ── Toggle action (ON/OFF pill only) ────────────────────────────────
+        final Runnable toggleAction = new Runnable() {
+            @Override
+            public void run() {
+                final boolean newChecked = !stateHolder[0];
+                stateHolder[0] = newChecked;
+                final String newVal = newChecked ? "0" : "1";
+                currentConfig.setProperty(configKey, newVal);
+                ConfigManager.saveConfig(currentConfig);
+                updatePillView(pillBtn, newChecked);
+
+                if (newChecked) {
+                    // FREEZE: only freeze checked packages
+                    String cmd = ConfigManager.buildSelectedPmCmd(
+                        currentConfig, pkgList, selKey, true);
+                    if (!cmd.isEmpty()) {
+                        final String freezeCmd = cmd;
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                ShellUtils.CommandResult res = ShellUtils.execRoot(freezeCmd);
+                                String verResult = "";
+                                if (verifyCmd != null && !verifyCmd.isEmpty()) {
+                                    verResult = ShellUtils.execRoot(verifyCmd).stdout.trim();
+                                }
+                                final String log = ShellUtils.readLog(15);
+                                mainHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (logDrawer != null) logDrawer.setText(log);
+                                    }
+                                });
+                            }
+                        }).start();
+                    }
+                } else {
+                    // UNFREEZE: unfreeze all packages in this category
+                    String cmd = ConfigManager.buildPmCmd(pkgList, false);
+                    if (!cmd.isEmpty()) {
+                        final String unfreezeCmd = cmd;
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                ShellUtils.CommandResult res = ShellUtils.execRoot(unfreezeCmd);
+                                String verResult = "";
+                                if (verifyCmd != null && !verifyCmd.isEmpty()) {
+                                    verResult = ShellUtils.execRoot(verifyCmd).stdout.trim();
+                                }
+                                final String log = ShellUtils.readLog(15);
+                                mainHandler.post(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (logDrawer != null) logDrawer.setText(log);
+                                    }
+                                });
+                            }
+                        }).start();
+                    }
+                }
+            }
+        };
+
+        // Clicking the pill toggles ON/OFF
+        pillBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { toggleAction.run(); }
+        });
+    }
+
+    /** Save which packages are checked to the config. */
+    private void saveCurrentSelection(CheckBox[] checkBoxes, String[] pkgs, String selKey) {
+        java.util.List<String> checked = new java.util.ArrayList<>();
+        for (int i = 0; i < checkBoxes.length; i++) {
+            if (checkBoxes[i].isChecked()) checked.add(pkgs[i]);
+        }
+        ConfigManager.savePkgSelection(currentConfig, selKey,
+            checked.toArray(new String[0]));
+        ConfigManager.saveConfig(currentConfig);
+    }
+
+    // ── APPS section: per-app cards with install/update/progress ──────────
+    private void addAppInstallerCards(final TextView logDrawer) {
+        for (final AppInstaller.AppDef app : AppInstaller.APPS) {
+            addAppCard(app, logDrawer);
+        }
+    }
+
+    private void addAppCard(final AppInstaller.AppDef app, final TextView logDrawer) {
+        // ── Card container ──────────────────────────────────────────────
+        final LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        // ── Top row: name + status + install button ─────────────────────
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tName = new TextView(this);
+        tName.setLayoutParams(new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tName.setText(app.name);
+        setSp(tName, 12);
+        tName.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tName.setTextColor(Color.BLACK);
+
+        // Status pill: INSTALLED v1.2.3 / NOT INSTALLED
+        final TextView statusPill = new TextView(this);
+        statusPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(statusPill, 10);
+        statusPill.setGravity(Gravity.CENTER);
+        statusPill.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        statusLp.setMarginEnd(dpToPx(8));
+        statusPill.setLayoutParams(statusLp);
+        boolean installed = AppInstaller.isInstalled(app.packageName);
+        if (installed) {
+            String ver = AppInstaller.getInstalledVersion(app.packageName);
+            statusPill.setText("INSTALLED" + (ver != null ? " v" + ver : ""));
+            statusPill.setTextColor(Color.WHITE);
+            statusPill.setBackgroundColor(Color.BLACK);
+        } else {
+            statusPill.setText("NOT INSTALLED");
+            statusPill.setTextColor(Color.BLACK);
+            statusPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        }
+
+        // Install button
+        final Button installBtn = new Button(this);
+        setSp(installBtn, 10);
+        installBtn.setText(installed ? "UPDATE" : "INSTALL");
+        installBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        installBtn.setAllCaps(false);
+        installBtn.setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6));
+        installBtn.setMinimumHeight(0);
+        installBtn.setMinimumWidth(0);
+        installBtn.setMinWidth(0);
+        installBtn.setMinHeight(0);
+        installBtn.setTextSize(11);
+        styleEinkButton(installBtn, true);
+
+        // Uninstall button (only shown when the app is installed)
+        final Button uninstallBtn = new Button(this);
+        setSp(uninstallBtn, 10);
+        uninstallBtn.setText("UNINSTALL");
+        uninstallBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        uninstallBtn.setAllCaps(false);
+        uninstallBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+        uninstallBtn.setMinimumHeight(0);
+        uninstallBtn.setMinimumWidth(0);
+        uninstallBtn.setMinWidth(0);
+        uninstallBtn.setMinHeight(0);
+        uninstallBtn.setTextSize(11);
+        styleEinkButton(uninstallBtn, false);
+        uninstallBtn.setVisibility(installed ? View.VISIBLE : View.GONE);
+
+        topRow.addView(tName);
+        topRow.addView(statusPill);
+        topRow.addView(installBtn);
+        topRow.addView(uninstallBtn);
+        card.addView(topRow);
+
+        // ── Description ─────────────────────────────────────────────────
+        TextView tDesc = new TextView(this);
+        tDesc.setText(app.description);
+        setSp(tDesc, 11);
+        tDesc.setTypeface(Typeface.DEFAULT);
+        tDesc.setTextColor(Color.BLACK);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
+        card.addView(tDesc);
+
+        // ── Progress bar (hidden initially) ─────────────────────────────
+        final LinearLayout progressRow = new LinearLayout(this);
+        progressRow.setOrientation(LinearLayout.HORIZONTAL);
+        progressRow.setGravity(Gravity.CENTER_VERTICAL);
+        progressRow.setVisibility(View.GONE);
+
+        final TextView progressLabel = new TextView(this);
+        progressLabel.setText("Downloading...");
+        setSp(progressLabel, 10);
+        progressLabel.setTypeface(Typeface.DEFAULT);
+        progressLabel.setTextColor(Color.BLACK);
+        progressLabel.setLayoutParams(new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+
+        final TextView progressPct = new TextView(this);
+        progressPct.setText("0%");
+        setSp(progressPct, 10);
+        progressPct.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        progressPct.setTextColor(Color.BLACK);
+
+        progressRow.addView(progressLabel);
+        progressRow.addView(progressPct);
+        card.addView(progressRow);
+
+        // ── Error label (hidden initially) ──────────────────────────────
+        final TextView errorLabel = new TextView(this);
+        errorLabel.setVisibility(View.GONE);
+        setSp(errorLabel, 10);
+        errorLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        errorLabel.setTextColor(Color.BLACK);
+        errorLabel.setPadding(0, dpToPx(4), 0, 0);
+        card.addView(errorLabel);
+
+        addSectionContent(card);
+
+        // ── Install button handler ──────────────────────────────────────
+        final Handler mainHandler = new Handler();
+        installBtn.setEnabled(true);
+
+        installBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                installBtn.setEnabled(false);
+                installBtn.setText("...");
+                errorLabel.setVisibility(View.GONE);
+                progressRow.setVisibility(View.VISIBLE);
+                progressLabel.setText("Starting...");
+                progressPct.setText("0%");
+
+                AppInstaller.install(MainActivity.this, app, new AppInstaller.InstallCallback() {
+                    @Override
+                    public void onProgress(final String message, final int percent) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                progressLabel.setText(message);
+                                progressPct.setText(percent + "%");
+                                if (logDrawer != null) {
+                                    logDrawer.setText(message);
+                                }
+                            }
+                        });
+                    }
+
+                    @Override
+                    public void onResult(final boolean success, final String message) {
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                progressRow.setVisibility(View.GONE);
+                                installBtn.setEnabled(true);
+
+                                boolean nowInstalled = AppInstaller.isInstalled(app.packageName);
+                                if (success) {
+                                    if (app.isSystem && !nowInstalled) {
+                                        // Magisk system app — needs reboot to activate
+                                        statusPill.setText("NEEDS REBOOT");
+                                        statusPill.setTextColor(Color.BLACK);
+                                        statusPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                                        uninstallBtn.setVisibility(View.GONE);
+                                        wireRebootButton(installBtn,
+                                            app.name + " system app is installed. Reboot to activate it.");
+                                    } else {
+                                        updateAppCardState(app, nowInstalled, statusPill, installBtn, uninstallBtn);
+                                    }
+                                    errorLabel.setVisibility(View.VISIBLE);
+                                    errorLabel.setTextColor(Color.BLACK);
+                                    errorLabel.setText(message);
+                                } else {
+                                    updateAppCardState(app, nowInstalled, statusPill, installBtn, uninstallBtn);
+                                    errorLabel.setVisibility(View.VISIBLE);
+                                    errorLabel.setTextColor(Color.BLACK);
+                                    errorLabel.setText("FAILED: " + message);
+                                }
+                                if (logDrawer != null) logDrawer.setText(message);
+                            }
+                        });
+                    }
+                });
+            }
+        });
+
+        // ── Uninstall button handler ────────────────────────────────────
+        uninstallBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String msg = "Remove " + app.name + " from this device?";
+                if (app.isSystem) {
+                    msg = "Remove " + app.name + " system app?\n" +
+                        "The stock launcher will be restored. A reboot is required to finish removal.";
+                }
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("Uninstall " + app.name)
+                    .setMessage(msg)
+                    .setPositiveButton("UNINSTALL", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface d, int which) {
+                            runUninstall(app, statusPill, installBtn, uninstallBtn,
+                                progressRow, progressLabel, progressPct,
+                                errorLabel, logDrawer, mainHandler);
+                        }
+                    })
+                    .setNegativeButton("CANCEL", null)
+                    .show();
+            }
+        });
+    }
+
+    /** Refresh a card's pill + buttons to match the installed state. */
+    private void updateAppCardState(AppInstaller.AppDef app, boolean installed,
+                                    TextView statusPill, Button installBtn, Button uninstallBtn) {
+        if (installed) {
+            String ver = AppInstaller.getInstalledVersion(app.packageName);
+            statusPill.setText("INSTALLED" + (ver != null ? " v" + ver : ""));
+            statusPill.setTextColor(Color.WHITE);
+            statusPill.setBackgroundColor(Color.BLACK);
+            installBtn.setText("UPDATE");
+            uninstallBtn.setVisibility(View.VISIBLE);
+            uninstallBtn.setText("UNINSTALL");
+        } else {
+            statusPill.setText("NOT INSTALLED");
+            statusPill.setTextColor(Color.BLACK);
+            statusPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+            installBtn.setText("INSTALL");
+            uninstallBtn.setVisibility(View.GONE);
+        }
+    }
+
+    /** Turn a button into a confirm-then-reboot button. */
+    private void wireRebootButton(Button btn, final String message) {
+        btn.setText("REBOOT");
+        btn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showRebootDialog(message);
+            }
+        });
+    }
+
+    /** Ask the user whether to reboot now. */
+    private void showRebootDialog(final String message) {
+        new AlertDialog.Builder(MainActivity.this)
+            .setTitle("Reboot?")
+            .setMessage(message)
+            .setPositiveButton("REBOOT", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int which) {
+                    ShellUtils.execRoot("svc power reboot");
+                }
+            })
+            .setNegativeButton("LATER", null)
+            .show();
+    }
+
+    /** Run the uninstall flow on a background thread and update the card. */
+    private void runUninstall(final AppInstaller.AppDef app, final TextView statusPill,
+                              final Button installBtn, final Button uninstallBtn,
+                              final LinearLayout progressRow, final TextView progressLabel,
+                              final TextView progressPct, final TextView errorLabel,
+                              final TextView logDrawer, final Handler mainHandler) {
+        installBtn.setEnabled(false);
+        uninstallBtn.setEnabled(false);
+        errorLabel.setVisibility(View.GONE);
+        progressRow.setVisibility(View.VISIBLE);
+        progressLabel.setText("Uninstalling...");
+        progressPct.setText("0%");
+
+        // A system-app (Magisk overlay) removal needs a reboot to fully release the
+        // /system path, so remember it now — the package may be gone by the time the
+        // result callback runs.
+        final boolean wasSystem = AppInstaller.isInstalledAsSystem(app.packageName);
+
+        AppInstaller.uninstall(MainActivity.this, app, new AppInstaller.InstallCallback() {
+            @Override
+            public void onProgress(final String message, final int percent) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        progressLabel.setText(message);
+                        progressPct.setText(percent + "%");
+                        if (logDrawer != null) logDrawer.setText(message);
+                    }
+                });
+            }
+
+            @Override
+            public void onResult(final boolean success, final String message) {
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        progressRow.setVisibility(View.GONE);
+                        installBtn.setEnabled(true);
+                        uninstallBtn.setEnabled(true);
+                        errorLabel.setVisibility(View.VISIBLE);
+                        errorLabel.setTextColor(Color.BLACK);
+
+                        if (success) {
+                            if (wasSystem) {
+                                // Overlay removed from disk; a reboot fully releases the
+                                // /system path and clears the mounted copy.
+                                statusPill.setText("NEEDS REBOOT");
+                                statusPill.setTextColor(Color.BLACK);
+                                statusPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                                uninstallBtn.setVisibility(View.GONE);
+                                String rebootMsg = app.name + " removed. Reboot to finish uninstalling it.";
+                                wireRebootButton(installBtn, rebootMsg);
+                                showRebootDialog(rebootMsg);
+                            } else {
+                                updateAppCardState(app, false, statusPill, installBtn, uninstallBtn);
+                            }
+                            errorLabel.setText(message);
+                        } else {
+                            errorLabel.setText("FAILED: " + message);
+                        }
+                        if (logDrawer != null) logDrawer.setText(message);
+                    }
+                });
+            }
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -985,7 +1907,6 @@ public class MainActivity extends Activity {
     private void renderAppDebloat() {
         final List<String> protected_pkgs = new ArrayList<String>();
         protected_pkgs.add("com.right9code.hibigzero");
-        protected_pkgs.add("com.right9code.hibreakmanager");
         protected_pkgs.add("com.right9code.anyhome");
         protected_pkgs.add("org.koreader.launcher");
         protected_pkgs.add("android");
@@ -993,8 +1914,6 @@ public class MainActivity extends Activity {
         protected_pkgs.add("com.topjohnwu.magisk");
         protected_pkgs.add("com.xrz.sys.control");
         protected_pkgs.add("com.xrz.settings");
-        protected_pkgs.add("com.xrz.standby");
-        protected_pkgs.add("com.xrz.input");
         protected_pkgs.add("com.google.android.webview");
         protected_pkgs.add("com.termux");
         protected_pkgs.add("com.tailscale.ipn");
@@ -1121,9 +2040,9 @@ public class MainActivity extends Activity {
                     List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
                     java.util.Set<String> restrictedPkgs = ConfigManager.loadRestrictedPkgs();
 
-                    // Parse dumpsys usagestats live for Standby Buckets
+                    // Parse dumpsys usagestats live for Standby Buckets (MUST USE ROOT for DUMP permission)
                     final java.util.Map<String, Integer> bucketMap = new java.util.HashMap<String, Integer>();
-                    ShellUtils.CommandResult usgRes = ShellUtils.exec("dumpsys usagestats | grep -E 'package=.*bucket='");
+                    ShellUtils.CommandResult usgRes = ShellUtils.execRoot("dumpsys usagestats | grep -E 'package=.*bucket='", false);
                     if (usgRes.isSuccess() && usgRes.stdout != null) {
                         for (String line : usgRes.stdout.split("\n")) {
                             int pkgIdx = line.indexOf("package=");
@@ -1142,18 +2061,23 @@ public class MainActivity extends Activity {
                         }
                     }
 
-                    // Parse dumpsys deviceidle whitelist live for Doze exemptions
+                    // Parse dumpsys deviceidle whitelist live for Doze exemptions (MUST USE ROOT for DUMP permission)
                     final java.util.Set<String> dozeWhitelist = new java.util.HashSet<String>();
-                    ShellUtils.CommandResult dozeRes = ShellUtils.exec("dumpsys deviceidle whitelist");
+                    final java.util.Set<String> systemExcidle = new java.util.HashSet<String>();
+                    ShellUtils.CommandResult dozeRes = ShellUtils.execRoot("dumpsys deviceidle whitelist", false);
                     if (dozeRes.isSuccess() && dozeRes.stdout != null) {
                         for (String line : dozeRes.stdout.split("\n")) {
                             String[] parts = line.split(",");
                             if (parts.length >= 2) {
                                 dozeWhitelist.add(parts[1].trim());
+                                if (line.startsWith("system-excidle")) {
+                                    systemExcidle.add(parts[1].trim());
+                                }
                             }
                         }
                     }
 
+                    final java.util.Set<String> finalSystemExcidle = systemExcidle;
                     final List<AppItem> items = new ArrayList<AppItem>();
                     for (ApplicationInfo app : apps) {
                         String label = app.loadLabel(pm).toString();
@@ -1162,7 +2086,9 @@ public class MainActivity extends Activity {
                         boolean isRestr = restrictedPkgs.contains(app.packageName);
                         int bkt = bucketMap.containsKey(app.packageName) ? bucketMap.get(app.packageName) : (app.enabled ? 10 : 50);
                         boolean isDoze = dozeWhitelist.contains(app.packageName);
-                        items.add(new AppItem(app, label, app.packageName, isProt, app.enabled, isSys, isRestr, bkt, isDoze));
+                        AppItem item = new AppItem(app, label, app.packageName, isProt, app.enabled, isSys, isRestr, bkt, isDoze);
+                        item.isSystemExcidle = finalSystemExcidle.contains(app.packageName);
+                        items.add(item);
                     }
                     mainHandler.post(new Runnable() {
                         @Override
@@ -1182,7 +2108,14 @@ public class MainActivity extends Activity {
     private void updateDebloatStatusLine(TextView statusLine, AppItem item) {
         String freeze = item.isEnabled ? "Not frozen" : "Frozen";
         String bg = item.isRestricted ? "restricted" : "allowed";
-        String doze = item.isDozeExempt ? "doze exempt" : "doze optimized";
+        String doze;
+        if (item.isSystemExcidle) {
+            doze = "doze system-exempt";
+        } else if (item.isDozeExempt) {
+            doze = "doze exempt";
+        } else {
+            doze = "doze optimized";
+        }
         statusLine.setText(freeze + "  |  background: " + bg +
             "  |  " + doze + "  |  usage: " + bucketDescription(item.standbyBucket));
     }
@@ -1203,6 +2136,8 @@ public class MainActivity extends Activity {
 
     private void refreshDebloatListWithScroll() {
         final int scrollY = mainScrollView != null ? mainScrollView.getScrollY() : 0;
+        sectionTarget = null;
+        contentContainer.removeAllViews();
         renderAppDebloat();
         if (mainScrollView != null) {
             mainScrollView.post(new Runnable() {
@@ -1413,30 +2348,32 @@ public class MainActivity extends Activity {
         List<String> options = new ArrayList<String>();
         final List<Integer> actions = new ArrayList<Integer>();
 
-        // Action 0: Freeze / Unfreeze
+        // Action 0: Enable / Disable
         if (!isProt) {
-            options.add(isEnabled ? "FREEZE APP (pm disable)" : "UNFREEZE APP (pm enable)");
+            options.add((item.isEnabled ? "DISABLE" : "ENABLE") + "  [" + (item.isEnabled ? "Active" : "Frozen") + "]");
             actions.add(0);
         }
 
-        // Action 1: Restrict AppOps
-        options.add(item.isRestricted ? "UNRESTRICT APPOPS (Allow background)" : "RESTRICT APPOPS (Silence wakelocks/alarms)");
+        // Action 1: Background activity
+        options.add((item.isRestricted ? "ALLOW" : "BLOCK") + " BACKGROUND  [" + (item.isRestricted ? "Restricted" : "Free") + "]");
         actions.add(1);
 
-        // Action 2: Standby Bucket
-        options.add("SET STANDBY BUCKET: [" + ConfigManager.getBucketLabel(item.standbyBucket) + "]");
+        // Action 2: Standby bucket
+        options.add("SET PRIORITY  [" + ConfigManager.getBucketLabel(item.standbyBucket) + "]");
         actions.add(2);
 
-        // Action 3: Doze Whitelist
-        options.add(item.isDozeExempt ? "REMOVE DOZE EXEMPTION (Optimize battery)" : "EXEMPT FROM DOZE (Allow background sync)");
-        actions.add(3);
+        // Action 3: Doze exemption — skip for system-excidle (framework re-adds it)
+        if (!item.isSystemExcidle) {
+            options.add((item.isDozeExempt ? "BLOCK" : "ALLOW") + " DURING DOZE  [" + (item.isDozeExempt ? "Allowed" : "Blocked") + "]");
+            actions.add(3);
+        }
 
-        // Action 4: Launch App
-        options.add("RUN / LAUNCH APP");
+        // Action 4: Launch
+        options.add("LAUNCH");
         actions.add(4);
 
-        // Action 5: Details
-        options.add("VIEW LIVE APP DETAILS");
+        // Action 5: Info
+        options.add("INFO");
         actions.add(5);
 
         String[] optArr = options.toArray(new String[0]);
@@ -1466,12 +2403,12 @@ public class MainActivity extends Activity {
                         } else {
                             ShellUtils.execRoot("pm enable " + pkg + " 2>/dev/null");
                         }
-                        cachedAppItems = null;
+                        item.isEnabled = !item.isEnabled;
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                Toast.makeText(MainActivity.this, (item.isEnabled ? "Froze " : "Unfroze ") + pkg, Toast.LENGTH_SHORT).show();
-                                refreshDebloatListWithScroll();
+                                Toast.makeText(MainActivity.this, (item.isEnabled ? "Unfroze " : "Froze ") + pkg, Toast.LENGTH_SHORT).show();
+                                renderDebloatList(listContainer, pm, protected_pkgs);
                             }
                         });
                     }
@@ -1491,12 +2428,12 @@ public class MainActivity extends Activity {
                             restricted.add(pkg);
                         }
                         ConfigManager.saveRestrictedPkgs(restricted);
-                        cachedAppItems = null;
+                        item.isRestricted = !item.isRestricted;
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                Toast.makeText(MainActivity.this, (item.isRestricted ? "Unrestricted " : "Restricted ") + item.label, Toast.LENGTH_SHORT).show();
-                                refreshDebloatListWithScroll();
+                                Toast.makeText(MainActivity.this, (item.isRestricted ? "Restricted " : "Unrestricted ") + item.label, Toast.LENGTH_SHORT).show();
+                                renderDebloatList(listContainer, pm, protected_pkgs);
                             }
                         });
                     }
@@ -1512,12 +2449,12 @@ public class MainActivity extends Activity {
                     @Override
                     public void run() {
                         ShellUtils.execRoot(ConfigManager.buildDozeWhitelistCmd(pkg, !item.isDozeExempt));
-                        cachedAppItems = null;
+                        item.isDozeExempt = !item.isDozeExempt;
                         mainHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                Toast.makeText(MainActivity.this, (!item.isDozeExempt ? "Exempted " : "Unexempted ") + item.label, Toast.LENGTH_SHORT).show();
-                                refreshDebloatListWithScroll();
+                                Toast.makeText(MainActivity.this, (item.isDozeExempt ? "Exempted " : "Unexempted ") + item.label, Toast.LENGTH_SHORT).show();
+                                renderDebloatList(listContainer, pm, protected_pkgs);
                             }
                         });
                     }
@@ -1546,10 +2483,10 @@ public class MainActivity extends Activity {
                                                     @Override
                                                     public void run() {
                                                         ShellUtils.execRoot("am force-stop " + pkg + " 2>/dev/null; pm disable-user --user 0 " + pkg + " 2>/dev/null");
-                                                        cachedAppItems = null;
+                                                        item.isEnabled = false;
                                                         mainHandler.post(new Runnable() {
                                                             @Override
-                                                            public void run() { refreshDebloatListWithScroll(); }
+                                                            public void run() { renderDebloatList(listContainer, pm, protected_pkgs); }
                                                         });
                                                     }
                                                 }).start();
@@ -1558,8 +2495,7 @@ public class MainActivity extends Activity {
                                         .setNegativeButton("LEAVE ACTIVE", new DialogInterface.OnClickListener() {
                                             @Override
                                             public void onClick(DialogInterface d, int which) {
-                                                cachedAppItems = null;
-                                                refreshDebloatListWithScroll();
+                                                renderDebloatList(listContainer, pm, protected_pkgs);
                                             }
                                         })
                                         .show();
@@ -1592,6 +2528,7 @@ public class MainActivity extends Activity {
             "RESTRICTED (45) - Silenced in background"
         };
         final String[] bucketCodes = new String[] { "active", "working_set", "frequent", "rare", "restricted" };
+        final int[] bucketInts = new int[] { 10, 20, 30, 40, 45 };
 
         new AlertDialog.Builder(this)
             .setTitle("STANDBY BUCKET: " + item.label)
@@ -1603,12 +2540,12 @@ public class MainActivity extends Activity {
                         @Override
                         public void run() {
                             ShellUtils.execRoot(ConfigManager.buildSetStandbyBucketCmd(item.pkg, bCode));
-                            cachedAppItems = null;
+                            item.standbyBucket = bucketInts[which];
                             mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
                                     Toast.makeText(MainActivity.this, item.label + " -> " + bCode.toUpperCase(), Toast.LENGTH_SHORT).show();
-                                    refreshDebloatListWithScroll();
+                                    renderDebloatList(listContainer, pm, protected_pkgs);
                                 }
                             });
                         }
@@ -1713,7 +2650,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
         plp.setMargins(0, 0, dpToPx(4), 0);
         pauseBtn.setLayoutParams(plp);
-        pauseBtn.setText(diagBatteryPaused ? "[RESUME]" : "[PAUSE]");
+        pauseBtn.setText("[START]");
         pauseBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
         pauseBtn.setTextColor(Color.WHITE);
         pauseBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -1722,10 +2659,19 @@ public class MainActivity extends Activity {
         pauseBtn.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                diagBatteryPaused = !diagBatteryPaused;
-                pauseBtn.setText(diagBatteryPaused ? "[RESUME]" : "[PAUSE]");
-                if (!diagBatteryPaused && diagBatteryRunning && diagBatteryUpdater != null) {
+                if (!diagBatteryRunning) {
+                    // First tap — start polling
+                    diagBatteryRunning = true;
+                    diagBatteryPaused = false;
+                    pauseBtn.setText("[PAUSE]");
+                    triggerSingleDiagQuery(currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
                     mainHandler.post(diagBatteryUpdater);
+                } else {
+                    diagBatteryPaused = !diagBatteryPaused;
+                    pauseBtn.setText(diagBatteryPaused ? "[RESUME]" : "[PAUSE]");
+                    if (!diagBatteryPaused && diagBatteryUpdater != null) {
+                        mainHandler.post(diagBatteryUpdater);
+                    }
                 }
             }
         });
@@ -1750,8 +2696,9 @@ public class MainActivity extends Activity {
         diagToolbar.addView(refreshBtn);
         addSectionContent(diagToolbar);
 
-        // Live 10-second polling (skips when paused)
-        diagBatteryRunning = true;
+        // Live 10-second polling — starts paused, user taps START to begin
+        diagBatteryRunning = false;
+        diagBatteryPaused = true;
         diagBatteryUpdater = new Runnable() {
             @Override
             public void run() {
@@ -1771,8 +2718,7 @@ public class MainActivity extends Activity {
                                          "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
                                          "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
                                          "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
-                                         "PID=$(cat /data/local/tmp/autoshutdown.pid 2>/dev/null); " +
-                                         "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM|$PID\"";
+                                         "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM\"";
                             ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
                             final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
                             mainHandler.post(new Runnable() {
@@ -1856,8 +2802,7 @@ public class MainActivity extends Activity {
                              "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
                              "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
                              "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
-                             "PID=$(cat /data/local/tmp/autoshutdown.pid 2>/dev/null); " +
-                             "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM|$PID\"";
+                             "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM\"";
                 ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
                 final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
                 mainHandler.post(new Runnable() {
@@ -1874,7 +2819,7 @@ public class MainActivity extends Activity {
                               TextView gaugeBox, TextView projBox, TextView cpuBox) {
         if (raw == null || raw.isEmpty()) return;
         String[] parts = raw.split("\\|", -1);
-        if (parts.length < 12) return;
+        if (parts.length < 11) return;
 
         String rawCur = parts[0];
         String cap    = parts[1].isEmpty() ? "?" : parts[1];
@@ -1887,7 +2832,6 @@ public class MainActivity extends Activity {
         String f4     = parts[8];
         String g4     = parts[9].isEmpty() ? "?" : parts[9];
         String ppm    = parts[10];
-        String pid    = parts[11];
 
         int ma = parseCurrent(rawCur);
         boolean isCharging = st.equalsIgnoreCase("Charging") || st.equalsIgnoreCase("Full");
@@ -1956,10 +2900,10 @@ public class MainActivity extends Activity {
         boolean uncapped = ppm.toLowerCase(java.util.Locale.US).contains("disabled");
         cpuSb.append("\nPPM FREQ CAP:  ").append(uncapped ? "[UNCAPPED] Policy 7 Disabled" : "[LOCKED] Policy 7 Active").append("\n");
 
-        // Daemon
-        boolean daemonOk = !pid.trim().isEmpty();
+        // Auto-shutdown status
+        String shutdownEnabled = currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "1");
         String timeoutMin = currentConfig.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120");
-        cpuSb.append("AUTO-SHUTDOWN: ").append(daemonOk ? "[ACTIVE] PID " + pid.trim() + " (" + timeoutMin + "m)" : "[INACTIVE]").append("\n");
+        cpuSb.append("AUTO-SHUTDOWN: ").append("1".equals(shutdownEnabled) ? "[ALARM] " + timeoutMin + "m timeout" : "[DISABLED]").append("\n");
 
         cpuBox.setText(cpuSb.toString());
     }

@@ -3,21 +3,27 @@ package com.right9code.hibigzero;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.BufferedReader;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 
 public class ConfigManager {
     public static final String CONF_PATH          = "/data/local/tmp/hibreak.conf";
     public static final String BOOT_TS_PATH       = "/data/local/tmp/hibreak_last_boot.txt";
-    public static final String SHUTDOWN_SCRIPT     = "/data/local/tmp/auto_shutdown.sh";
     public static final String RESTRICTED_PATH     = "/data/local/tmp/hibreak_restricted.txt";
 
     public static final String[] CONF_KEYS = {
         "FIX_UART","GOOGLE_STACK","BIGME_BLOAT","MTK_CELLULAR","AOSP_STUBS",
         "LOCKDOWN_GBOARD","AGGRESSIVE_DOZE","SUPPRESS_ALARMS","KERNEL_SENSOR",
         "BATTERY_CAP_85","GOVERNOR_PROFILE","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
-        "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","DISABLE_ANIMATIONS"
+        "SLEEP_GOVERNOR","SLEEP_GOVERNOR_ENABLED",
+        "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","DISABLE_ANIMATIONS",
+        "KILL_SHUTDOWN_ALARM","SUPPRESS_JS_IDLE","WIDE_ALARM_FUZZ","INSTANT_LOCK",
+        "NO_BACKGROUNDS",
+        "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL"
     };
 
     public static final String GOOGLE_PKGS =
@@ -27,7 +33,20 @@ public class ConfigManager {
         "com.google.android.adservices.api com.google.mainline.adservices " +
         "com.google.android.federatedcompute " +
         "com.google.android.nearby.halfsheet " +
-        "com.google.android.tts com.google.android.apps.photos";
+        "com.google.android.tts com.google.android.apps.photos " +
+        "com.google.android.cellbroadcastreceiver com.google.android.ext.services " +
+        "com.google.android.hotspot2.osulogin com.google.android.ext.shared " +
+        "com.google.android.syncadapters.calendar com.google.android.projection.gearhead " +
+        "com.google.android.apps.restore com.google.android.apps.safetyhub " +
+        "com.google.android.healthconnect.controller com.google.android.health.connect.backuprestore " +
+        "com.google.android.ondevicepersonalization.services " +
+        "com.google.android.gms.location.history " +
+        "com.google.android.gms.supervision com.google.mainline.telemetry " +
+        "com.google.android.printservice.recommendation " +
+        "com.google.android.uwb.resources " +
+        "com.google.android.cellbroadcastservice com.google.android.partnersetup " +
+        "com.google.android.onetimeinitializer com.google.android.feedback " +
+        "com.google.android.modulemetadata";
 
     public static final String BIGME_PKGS =
         "com.xrz.ai com.example.test com.test.logcollect com.xrz.bigmecloud " +
@@ -35,7 +54,8 @@ public class ConfigManager {
         "com.xrz.bookmall com.xrz.ebook com.xrz.xreaderV3 com.xrz.music " +
         "com.xrz.video com.xrz.voice.text com.xrz.doc.translate com.xrz.ebook.launcher " +
         "com.xrz.soundrecord com.xrz.btranslate com.xrz.dictapp com.b300.xrz.web " +
-        "com.xrz.mutidisplay com.xrz.res.service com.xrz.tts.service";
+        "com.xrz.mutidisplay com.xrz.res.service com.xrz.tts.service " +
+        "com.xrz.input com.xrz.standby com.xrz.appmanager com.xrz.ebook.shelf";
 
     public static final String MTK_PKGS =
         "com.mediatek.ims com.mediatek.simprocessor com.mediatek.telephony " +
@@ -48,18 +68,279 @@ public class ConfigManager {
     public static final String AOSP_PKGS =
         "com.android.phone com.android.server.telecom com.android.providers.telephony " +
         "com.android.mms com.android.printspooler com.android.bips com.android.quicksearchbox " +
-        "com.android.providers.calendar";
+        "com.android.providers.calendar com.android.localtransport " +
+        "com.android.deskclock com.android.se " +
+        "com.android.calllogbackup com.android.cts.ctsshim com.android.cts.priv.ctsshim " +
+        "com.android.dreams.basic com.android.emergency " +
+        "com.android.pacprocessor " +
+        "com.android.wallpapercropper com.android.wallpaperpicker com.android.wallpaperbackup " +
+        "com.android.bookmarkprovider com.android.backupconfirm com.android.bluetoothmidiservice " +
+        "com.android.sharedstoragebackup " +
+        "com.android.location.fused com.android.role.notes.enabled " +
+        "com.android.carrierconfig com.android.egg com.android.mms.service " +
+        "com.android.ons com.android.simappdialog com.android.cameraextensions " +
+        "com.android.nfc com.android.dialer com.android.contacts " +
+        "com.mediatek.capctrl.service";
+
+    // ── Package descriptions for the per-package checkbox UI ───────────────
+    public static final java.util.Map<String, String> PKG_DESCRIPTIONS = new java.util.LinkedHashMap<>();
+    static {
+        // Google
+        PKG_DESCRIPTIONS.put("com.google.android.gms", "Play Services — constant background wakeups");
+        PKG_DESCRIPTIONS.put("com.android.vending", "Google Play Store — app updates & telemetry");
+        PKG_DESCRIPTIONS.put("com.google.android.gsf", "Google Services Framework — cloud sync daemon");
+        PKG_DESCRIPTIONS.put("com.google.android.configupdater", "Auto-downloads config updates silently");
+        PKG_DESCRIPTIONS.put("com.google.android.apps.turbo", "Digital Wellbeing & battery stats reporter");
+        PKG_DESCRIPTIONS.put("com.google.android.as", "Android System Intelligence — ML on-device");
+        PKG_DESCRIPTIONS.put("com.google.android.as.oss", "On-device personalization — scans your data");
+        PKG_DESCRIPTIONS.put("com.google.android.adservices.api", "Ad Services — ad tracking & profiling");
+        PKG_DESCRIPTIONS.put("com.google.mainline.adservices", "Mainline AdServices module");
+        PKG_DESCRIPTIONS.put("com.google.android.federatedcompute", "Federated learning — trains models on device");
+        PKG_DESCRIPTIONS.put("com.google.android.nearby.halfsheet", "Nearby sharing popup service");
+        PKG_DESCRIPTIONS.put("com.google.android.tts", "Text-to-Speech engine");
+        PKG_DESCRIPTIONS.put("com.google.android.apps.photos", "Google Photos — background backup & ML");
+        PKG_DESCRIPTIONS.put("com.google.android.cellbroadcastreceiver", "Emergency alert receiver");
+        PKG_DESCRIPTIONS.put("com.google.android.ext.services", "Android Extensions — background helper");
+        PKG_DESCRIPTIONS.put("com.google.android.hotspot2.osulogin", "WiFi hotspot login service");
+        PKG_DESCRIPTIONS.put("com.google.android.ext.shared", "Android Extensions shared lib");
+        PKG_DESCRIPTIONS.put("com.google.android.syncadapters.calendar", "Calendar sync adapter");
+        PKG_DESCRIPTIONS.put("com.google.android.projection.gearhead", "Android Auto projection");
+        PKG_DESCRIPTIONS.put("com.google.android.apps.restore", "Google data restore wizard");
+        PKG_DESCRIPTIONS.put("com.google.android.apps.safetyhub", "Safety Hub — emergency features");
+        PKG_DESCRIPTIONS.put("com.google.android.healthconnect.controller", "Health Connect controller");
+        PKG_DESCRIPTIONS.put("com.google.android.health.connect.backuprestore", "Health Connect backup");
+        PKG_DESCRIPTIONS.put("com.google.android.ondevicepersonalization.services", "On-device personalization");
+        PKG_DESCRIPTIONS.put("com.google.android.gms.location.history", "Location history tracker");
+        PKG_DESCRIPTIONS.put("com.google.android.gms.supervision", "Digital Wellbeing supervision");
+        PKG_DESCRIPTIONS.put("com.google.mainline.telemetry", "Google telemetry data collector");
+        PKG_DESCRIPTIONS.put("com.google.android.printservice.recommendation", "Print service discovery");
+        PKG_DESCRIPTIONS.put("com.google.android.uwb.resources", "Ultra-Wideband resources");
+        PKG_DESCRIPTIONS.put("com.google.android.cellbroadcastservice", "Cell broadcast service");
+        PKG_DESCRIPTIONS.put("com.google.android.partnersetup", "Partner setup wizard");
+        PKG_DESCRIPTIONS.put("com.google.android.onetimeinitializer", "First-run initializer");
+        PKG_DESCRIPTIONS.put("com.google.android.feedback", "Google feedback reporter");
+        PKG_DESCRIPTIONS.put("com.google.android.modulemetadata", "Module metadata updater");
+        // Bigme
+        PKG_DESCRIPTIONS.put("com.xrz.ai", "Bigme AI assistant — always running");
+        PKG_DESCRIPTIONS.put("com.example.test", "Bigme factory test app");
+        PKG_DESCRIPTIONS.put("com.test.logcollect", "Bigme log collector daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.bigmecloud", "Bigme Cloud sync — background data");
+        PKG_DESCRIPTIONS.put("com.xrz.hoverballdemo", "Hover ball UI demo");
+        PKG_DESCRIPTIONS.put("com.xrz.globalwritingservice", "Global writing service daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.appstore", "Bigme App Store — background updates");
+        PKG_DESCRIPTIONS.put("com.xrz.bookmall", "Bigme Book Mall — store daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.ebook", "Bigme ebook reader engine");
+        PKG_DESCRIPTIONS.put("com.xrz.xreaderV3", "Bigme X-Reader v3");
+        PKG_DESCRIPTIONS.put("com.xrz.music", "Bigme Music player");
+        PKG_DESCRIPTIONS.put("com.xrz.video", "Bigme Video player");
+        PKG_DESCRIPTIONS.put("com.xrz.voice.text", "Voice-to-text service");
+        PKG_DESCRIPTIONS.put("com.xrz.doc.translate", "Document translator daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.ebook.launcher", "Ebook launcher shortcut");
+        PKG_DESCRIPTIONS.put("com.xrz.soundrecord", "Sound recorder app");
+        PKG_DESCRIPTIONS.put("com.xrz.btranslate", "Bigme translate service");
+        PKG_DESCRIPTIONS.put("com.xrz.dictapp", "Bigme dictionary app");
+        PKG_DESCRIPTIONS.put("com.b300.xrz.web", "Bigme web browser");
+        PKG_DESCRIPTIONS.put("com.xrz.mutidisplay", "Multi-display manager daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.res.service", "Bigme resource service");
+        PKG_DESCRIPTIONS.put("com.xrz.tts.service", "Bigme TTS service daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.input", "Bigme input method");
+        PKG_DESCRIPTIONS.put("com.xrz.standby", "Bigme standby manager daemon");
+        PKG_DESCRIPTIONS.put("com.xrz.appmanager", "Bigme app manager");
+        PKG_DESCRIPTIONS.put("com.xrz.ebook.shelf", "Bigme ebook shelf widget");
+        // MTK
+        PKG_DESCRIPTIONS.put("com.mediatek.ims", "IMS — VoLTE & VoWiFi daemon");
+        PKG_DESCRIPTIONS.put("com.mediatek.simprocessor", "SIM card processor service");
+        PKG_DESCRIPTIONS.put("com.mediatek.telephony", "Telephony framework service");
+        PKG_DESCRIPTIONS.put("com.mediatek.callrecorder", "Call recording service");
+        PKG_DESCRIPTIONS.put("com.mediatek.duraspeed", "App standby optimizer");
+        PKG_DESCRIPTIONS.put("com.mediatek.location.mtkgeofence", "Geofencing service");
+        PKG_DESCRIPTIONS.put("com.mediatek.voicecommand", "Voice command daemon");
+        PKG_DESCRIPTIONS.put("com.mediatek.omacp", "OMA carrier provisioning");
+        PKG_DESCRIPTIONS.put("com.mediatek.smartratswitch.service", "Smart radio switching");
+        PKG_DESCRIPTIONS.put("com.mediatek.gnss.nonframeworklbs", "GNSS location service");
+        PKG_DESCRIPTIONS.put("com.mediatek.location.lppe.main", "LPPe location service");
+        PKG_DESCRIPTIONS.put("com.mediatek.miravision.ui", "MiraVision display tuning");
+        PKG_DESCRIPTIONS.put("com.mediatek.gbaservice", "GBA auth service");
+        PKG_DESCRIPTIONS.put("com.mediatek.factorymode", "Factory test mode");
+        PKG_DESCRIPTIONS.put("com.mediatek.batterywarning", "Battery warning popup");
+        PKG_DESCRIPTIONS.put("com.mediatek.aovtestapp", "Always-on vision test app");
+        PKG_DESCRIPTIONS.put("com.mediatek.voiceunlock", "Voice unlock daemon");
+        // AOSP
+        PKG_DESCRIPTIONS.put("com.android.phone", "Phone process — telephony daemon");
+        PKG_DESCRIPTIONS.put("com.android.server.telecom", "Telecom framework service");
+        PKG_DESCRIPTIONS.put("com.android.providers.telephony", "Telephony database provider");
+        PKG_DESCRIPTIONS.put("com.android.mms", "SMS/MMS messaging app");
+        PKG_DESCRIPTIONS.put("com.android.printspooler", "Print spooler service");
+        PKG_DESCRIPTIONS.put("com.android.bips", "Built-in print service");
+        PKG_DESCRIPTIONS.put("com.android.quicksearchbox", "Google search bar widget");
+        PKG_DESCRIPTIONS.put("com.android.providers.calendar", "Calendar database provider");
+        PKG_DESCRIPTIONS.put("com.android.localtransport", "Local backup transport");
+        PKG_DESCRIPTIONS.put("com.android.deskclock", "Clock/Alarm/Timer app");
+        PKG_DESCRIPTIONS.put("com.android.se", "Secure Element service");
+        PKG_DESCRIPTIONS.put("com.android.calllogbackup", "Call log backup service");
+        PKG_DESCRIPTIONS.put("com.android.cts.ctsshim", "CTS test shim");
+        PKG_DESCRIPTIONS.put("com.android.cts.priv.ctsshim", "CTS privileged test shim");
+        PKG_DESCRIPTIONS.put("com.android.dreams.basic", "Screen saver provider");
+        PKG_DESCRIPTIONS.put("com.android.emergency", "Emergency info app");
+        PKG_DESCRIPTIONS.put("com.android.pacprocessor", "PAC proxy auto-config");
+        PKG_DESCRIPTIONS.put("com.android.wallpapercropper", "Wallpaper cropper tool");
+        PKG_DESCRIPTIONS.put("com.android.wallpaperpicker", "Wallpaper picker");
+        PKG_DESCRIPTIONS.put("com.android.wallpaperbackup", "Wallpaper backup service");
+        PKG_DESCRIPTIONS.put("com.android.bookmarkprovider", "Bookmark database provider");
+        PKG_DESCRIPTIONS.put("com.android.backupconfirm", "Backup confirmation UI");
+        PKG_DESCRIPTIONS.put("com.android.bluetoothmidiservice", "Bluetooth MIDI service");
+        PKG_DESCRIPTIONS.put("com.android.sharedstoragebackup", "Shared storage backup");
+        PKG_DESCRIPTIONS.put("com.android.location.fused", "Fused location provider");
+        PKG_DESCRIPTIONS.put("com.android.role.notes.enabled", "Notes role provider");
+        PKG_DESCRIPTIONS.put("com.android.carrierconfig", "Carrier config service");
+        PKG_DESCRIPTIONS.put("com.android.egg", "Android Easter egg");
+        PKG_DESCRIPTIONS.put("com.android.mms.service", "MMS send/receive service");
+        PKG_DESCRIPTIONS.put("com.android.ons", "Opportunistic network service");
+        PKG_DESCRIPTIONS.put("com.android.simappdialog", "SIM app dialog");
+        PKG_DESCRIPTIONS.put("com.android.cameraextensions", "Camera extensions service");
+        PKG_DESCRIPTIONS.put("com.android.nfc", "NFC service daemon");
+        PKG_DESCRIPTIONS.put("com.android.dialer", "Phone dialer app");
+        PKG_DESCRIPTIONS.put("com.android.contacts", "Contacts/People app");
+        PKG_DESCRIPTIONS.put("com.mediatek.capctrl.service", "MediaTek capture control service");
+    }
 
     public static String buildPmCmd(String pkgList, boolean freeze) {
         String action = freeze ? "pm disable-user --user 0 " : "pm enable ";
+        Set<String> pkgs = new HashSet<>();
+        for (String p : pkgList.trim().split("\\s+")) {
+            if (!p.isEmpty()) pkgs.add(p);
+        }
+        if (freeze) {
+            // Dynamically discover all packages that must never be frozen
+            // (PMS required roles + APEX-installed packages)
+            Set<String> blocked = getBlockedPackages(pkgs);
+            pkgs.removeAll(blocked);
+            ShellUtils.appendLog("Frozen " + pkgs.size() + " packages, skipped " + blocked.size() + " required/APEX");
+        }
         StringBuilder sb = new StringBuilder();
-        for (String pkg : pkgList.trim().split("\\s+")) {
-            if (!pkg.isEmpty()) {
-                if (sb.length() > 0) sb.append("; ");
-                sb.append(action).append(pkg).append(" 2>/dev/null");
-            }
+        for (String pkg : pkgs) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(action).append(pkg).append(" 2>/dev/null");
         }
         return sb.toString();
+    }
+
+    // ── Per-package selection helpers ─────────────────────────────────────
+
+    /** Split a space-separated package list into a clean array. */
+    public static String[] splitPkgList(String pkgList) {
+        List<String> result = new ArrayList<>();
+        for (String p : pkgList.trim().split("\\s+")) {
+            if (!p.isEmpty()) result.add(p);
+        }
+        return result.toArray(new String[0]);
+    }
+
+    /**
+     * Get the selected (checked) subset of packages for a category.
+     * The selKey stores a comma-separated list of selected package names.
+     * If the key is empty/missing, all packages default to selected.
+     */
+    public static String[] getSelectedPkgs(Properties config, String pkgList, String selKey) {
+        String all[] = splitPkgList(pkgList);
+        String saved = config.getProperty(selKey, "").trim();
+        if (saved.isEmpty()) {
+            // Nothing saved yet — default: all packages selected
+            return all;
+        }
+        Set<String> selected = new HashSet<>(Arrays.asList(saved.split(",")));
+        // Filter to only packages that exist in the full list and are selected
+        List<String> result = new ArrayList<>();
+        for (String pkg : all) {
+            if (selected.contains(pkg)) result.add(pkg);
+        }
+        return result.toArray(new String[0]);
+    }
+
+    /**
+     * Build pm command for only the selected (checked) packages.
+     * Delegates to buildPmCmd for the blocked-packages safety filter.
+     */
+    public static String buildSelectedPmCmd(Properties config, String pkgList, String selKey, boolean freeze) {
+        String selected[] = getSelectedPkgs(config, pkgList, selKey);
+        if (selected.length == 0) return "";
+        // Join selected packages back into a space-separated string for buildPmCmd
+        String joined = String.join(" ", selected);
+        return buildPmCmd(joined, freeze);
+    }
+
+    /**
+     * Save the selected package set for a category.
+     * Pass an empty string to reset to "all selected" (the default).
+     */
+    public static void savePkgSelection(Properties config, String selKey, String[] selectedPkgs) {
+        // If all packages are selected, store empty string (meaning "all")
+        config.setProperty(selKey, String.join(",", selectedPkgs));
+    }
+
+    // Cache: discovered blocked packages for this boot session.
+    // Initialized once on first call to avoid repeating expensive dumpsys/pm path.
+    private static Set<String> sCachedBlocked = null;
+
+    private static Set<String> getBlockedPackages(Set<String> candidates) {
+        if (sCachedBlocked != null) return sCachedBlocked;
+        Set<String> blocked = new HashSet<>();
+
+        // 1. Known non-PMS crashes: services that bind to specific packages at boot
+        //    and crash system_server if the target is disabled.
+        blocked.add("com.android.microdroid.empty_payload");  // virtualization framework
+        blocked.add("com.android.location.fused");             // LocationManager binding
+
+        // 2. Query PMS for required role packages.
+        //    Format on Android 14:
+        //      Installer:
+        //        com.google.android.packageinstaller
+        //      Uninstaller:
+        //        com.google.android.packageinstaller
+        //      Permission Controller:
+        //        com.android.permissioncontroller
+        //      Verifier:
+        //        none
+        String dump = ShellUtils.execRoot("dumpsys package").stdout;
+        String[] lines = dump.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            String trimmed = lines[i].trim();
+            if ("Installer:".equals(trimmed) || "Uninstaller:".equals(trimmed) ||
+                "Permission Controller:".equals(trimmed) || "Verifier:".equals(trimmed) ||
+                "Wellbeing:".equals(trimmed) || "Sdk Sandbox:".equals(trimmed)) {
+                // Next non-empty indented line is the package name (or "none")
+                if (i + 1 < lines.length) {
+                    String pkg = lines[i + 1].trim();
+                    if (!pkg.isEmpty() && !"none".equals(pkg)) {
+                        blocked.add(pkg);
+                    }
+                }
+            }
+        }
+
+        // 3. Detect APEX-installed packages in one batch (never safe to freeze)
+        Set<String> allCandidates = new HashSet<>();
+        for (String p : GOOGLE_PKGS.trim().split("\\s+")) allCandidates.add(p);
+        for (String p : AOSP_PKGS.trim().split("\\s+")) allCandidates.add(p);
+        for (String p : BIGME_PKGS.trim().split("\\s+")) allCandidates.add(p);
+        for (String p : MTK_PKGS.trim().split("\\s+")) allCandidates.add(p);        StringBuilder pmCmd = new StringBuilder("pm path");
+        for (String p : allCandidates) pmCmd.append(" ").append(p);
+        String pmOut = ShellUtils.execRoot(pmCmd.toString()).stdout;
+        for (String line : pmOut.split("\n")) {
+            if (line.contains("/apex/")) {
+                int eq = line.lastIndexOf('=');
+                if (eq > 0) blocked.add(line.substring(eq + 1).trim());
+            }
+        }
+
+        // The Verifier role resolves to com.android.vending (Play Store). The user
+        // explicitly wants it gone as part of GOOGLE_STACK, and root `pm install`
+        // bypasses the verification flow, so freezing it is safe here.
+        blocked.remove("com.android.vending");
+
+        sCachedBlocked = blocked;
+        ShellUtils.appendLog("Blocked " + blocked.size() + " required/APEX packages from freezing");
+        return blocked;
     }
 
     public static String buildHotplugCmd(boolean offline4Cores) {
@@ -81,72 +362,96 @@ public class ConfigManager {
     }
 
     public static String buildGovernorCmd(String profile, String hotplug4Cores) {
-        boolean offline = "ereader_battery".equals(profile) || "1".equals(hotplug4Cores);
+        boolean offline = "ereader_battery".equals(profile) || "deep_sleep".equals(profile) || "1".equals(hotplug4Cores);
         String hpCmd = buildHotplugCmd(offline) + "; ";
+        String ppmPrep = "magiskpolicy --live \"allow magisk proc_ppm file { read write open getattr }\" 2>/dev/null; " +
+                         "chmod 666 /proc/ppm/policy_status /proc/ppm/policy/hard_userlimit* 2>/dev/null; ";
 
-        if ("ereader_battery".equals(profile)) {
-            return hpCmd +
-                   "magiskpolicy --live \"allow magisk proc_ppm file { read write open getattr }\" 2>/dev/null; " +
-                   "echo 7 0 > /proc/ppm/policy_status 2>/dev/null; " +
-                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq 2>/dev/null; " +
-                   "echo 900000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq 2>/dev/null; " +
+        if ("deep_sleep".equals(profile)) {
+            return hpCmd + ppmPrep +
+                   "echo 6 1 > /proc/ppm/policy_status 2>/dev/null; " +
+                   "echo 0 900000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 0 900000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "echo 1 400000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 1 400000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
+                   "echo 900000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
+                   "echo 80000 > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null; " +
+                   "echo 5000 > /sys/devices/system/cpu/cpufreq/schedutil/down_rate_limit_us 2>/dev/null";
+        } else if ("ereader_battery".equals(profile)) {
+            return hpCmd + ppmPrep +
+                   "echo 6 1 > /proc/ppm/policy_status 2>/dev/null; " +
+                   "echo 0 1351000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 0 900000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "echo 1 1244000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 1 745000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
                    "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
                    "echo 1351000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
-                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null; " +
-                   "echo 745000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null; " +
-                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
-                   "echo 1244000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
                    "echo 40000 > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null; " +
                    "echo 10000 > /sys/devices/system/cpu/cpufreq/schedutil/down_rate_limit_us 2>/dev/null";
         } else if ("stock".equals(profile)) {
-            return hpCmd +
+            return hpCmd + ppmPrep +
+                   "echo 0 -1 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 0 -1 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "echo 1 -1 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 1 -1 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "echo 6 0 > /proc/ppm/policy_status 2>/dev/null; " +
                    "echo 7 1 > /proc/ppm/policy_status 2>/dev/null; " +
                    "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
                    "echo 2200000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
                    "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
-                   "echo 1800000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null";
+                   "echo 1600000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null";
         } else {
-            // "schedutil_efficient" / "balanced" (Default)
-            return hpCmd +
-                   "magiskpolicy --live \"allow magisk proc_ppm file { read write open getattr }\" 2>/dev/null; " +
-                   "echo 7 0 > /proc/ppm/policy_status 2>/dev/null; " +
-                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq 2>/dev/null; " +
-                   "echo 900000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq 2>/dev/null; " +
+            // "schedutil_efficient" / balanced
+            return hpCmd + ppmPrep +
+                   "echo 6 1 > /proc/ppm/policy_status 2>/dev/null; " +
+                   "echo 0 2200000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 0 900000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+                   "echo 1 1600000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+                   "echo 1 745000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
                    "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
                    "echo 2200000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
-                   "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null; " +
-                   "echo 745000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq 2>/dev/null; " +
                    "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
-                   "echo 1800000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
+                   "echo 1600000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
                    "echo 20000 > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null; " +
                    "echo 10000 > /sys/devices/system/cpu/cpufreq/schedutil/down_rate_limit_us 2>/dev/null";
         }
     }
 
     public static String getGovernorLabel(String profile) {
+        if ("deep_sleep".equals(profile))      return "DEEP SLEEP (900/400MHz LOCKED)";
         if ("ereader_battery".equals(profile)) return "E-READER BATTERY (1.35GHz MAX)";
         if ("stock".equals(profile))           return "STOCK (2.06GHz LOCKED)";
         return "BALANCED EFFICIENT (2.2GHz PEAK)";
     }
 
+    // All defaults OFF — user must enable features manually on first launch.
+    // Debulk lists and system tweaks do nothing until the user toggles them on.
     public static Properties defaults() {
         Properties p = new Properties();
-        p.setProperty("FIX_UART", "1");
+        p.setProperty("FIX_UART", "0");
         p.setProperty("GOOGLE_STACK", "0");
         p.setProperty("BIGME_BLOAT", "0");
         p.setProperty("MTK_CELLULAR", "0");
         p.setProperty("AOSP_STUBS", "0");
-        p.setProperty("LOCKDOWN_GBOARD", "1");
-        p.setProperty("AGGRESSIVE_DOZE", "1");
-        p.setProperty("SUPPRESS_ALARMS", "1");
-        p.setProperty("KERNEL_SENSOR", "1");
+        p.setProperty("LOCKDOWN_GBOARD", "0");
+        p.setProperty("AGGRESSIVE_DOZE", "0");
+        p.setProperty("SUPPRESS_ALARMS", "0");
+        p.setProperty("KERNEL_SENSOR", "0");
         p.setProperty("BATTERY_CAP_85", "0");
         p.setProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         p.setProperty("HOTPLUG_4_CORES", "0");
-        p.setProperty("WIFI_SLEEP_ZERO", "1");
-        p.setProperty("AUTO_SHUTDOWN_ENABLED", "1");
+        p.setProperty("WIFI_SLEEP_ZERO", "0");
+        p.setProperty("SLEEP_GOVERNOR", "deep_sleep");
+        p.setProperty("SLEEP_GOVERNOR_ENABLED", "0");
+        p.setProperty("AUTO_SHUTDOWN_ENABLED", "0");
         p.setProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120");
-        p.setProperty("DISABLE_ANIMATIONS", "1");
+        p.setProperty("DISABLE_ANIMATIONS", "0");
+        p.setProperty("KILL_SHUTDOWN_ALARM", "0");
+        p.setProperty("SUPPRESS_JS_IDLE", "0");
+        p.setProperty("WIDE_ALARM_FUZZ", "0");
+        p.setProperty("INSTANT_LOCK", "0");
+        p.setProperty("NO_BACKGROUNDS", "0");
         return p;
     }
 
@@ -170,9 +475,9 @@ public class ConfigManager {
 
     public static void saveConfig(Properties p) {
         try {
-            StringBuilder sb = new StringBuilder("# HiBreak Manager Config v2.0\\n");
+            StringBuilder sb = new StringBuilder("# HiBreak Manager Config v2.0\n");
             for (String key : CONF_KEYS) {
-                sb.append(key).append("=").append(p.getProperty(key, "")).append("\\n");
+                sb.append(key).append("=").append(p.getProperty(key, "")).append("\n");
             }
             FileWriter fw = new FileWriter(CONF_PATH);
             fw.write(sb.toString());
@@ -210,17 +515,14 @@ public class ConfigManager {
     }
 
     public static void saveRestrictedPkgs(Set<String> pkgs) {
-        try {
-            StringBuilder sb = new StringBuilder("# HiBreak Manager Restricted Packages\\n");
-            for (String pkg : pkgs) {
-                sb.append(pkg).append("\\n");
-            }
-            FileWriter fw = new FileWriter(RESTRICTED_PATH);
-            fw.write(sb.toString());
-            fw.close();
-        } catch (Exception e) {
-            ShellUtils.appendLog("saveRestrictedPkgs error: " + e.getMessage());
+        StringBuilder sb = new StringBuilder("# HiBreak Manager Restricted Packages\n");
+        for (String pkg : pkgs) {
+            sb.append(pkg).append("\n");
         }
+        // Write via root — Java FileWriter can't write to /data/local/tmp (owned by shell:shell)
+        ShellUtils.execRoot(
+            "printf '" + sb.toString().replace("'", "'\\''") + "' > " + RESTRICTED_PATH +
+            " && chmod 666 " + RESTRICTED_PATH + " 2>/dev/null", false);
     }
 
     public static String buildRestrictCmd(String pkg) {
@@ -257,7 +559,74 @@ public class ConfigManager {
     }
 
     public static String buildDozeWhitelistCmd(String pkg, boolean exempt) {
-        return "dumpsys deviceidle whitelist " + (exempt ? "+" : "-") + pkg + " 2>/dev/null";
+        if (exempt) {
+            return "dumpsys deviceidle whitelist +" + pkg + " 2>/dev/null";
+        } else {
+            // For system-excidle packages, whitelist removal re-adds immediately.
+            // Use appops to silence the app instead — achieves the same effect.
+            return "dumpsys deviceidle whitelist -" + pkg + " 2>/dev/null; " +
+                "cmd appops set " + pkg + " RUN_IN_BACKGROUND ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " WAKE_LOCK ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " ALARM_WAKEUP ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " SCHEDULE_EXACT_ALARM ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " BOOT_COMPLETED ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " RECEIVE_BOOT_COMPLETED ignore 2>/dev/null; " +
+                "am set-standby-bucket " + pkg + " restricted 2>/dev/null";
+        }
+    }
+
+    // ── Optimization #3: Suspend failure reduction commands ──────────────
+
+    public static String getKillShutdownAlarmCmd(boolean enable) {
+        if (enable) {
+            return "pm disable com.android.settings/com.xrz.settings.receiver.PowersaveShutDownAlarmReceiver 2>/dev/null; " +
+                "am force-stop com.android.settings 2>/dev/null; " +
+                "mkdir -p /data/system/ifw 2>/dev/null; " +
+                "echo '<rules><broadcast block=\"true\" log=\"true\"><component name=\"com.android.settings/com.xrz.settings.receiver.PowersaveShutDownAlarmReceiver\"/></broadcast></rules>' > /data/system/ifw/block_bigme_shutdown.xml 2>/dev/null; " +
+                "chmod 644 /data/system/ifw/block_bigme_shutdown.xml 2>/dev/null; " +
+                "chown system:system /data/system/ifw/block_bigme_shutdown.xml 2>/dev/null; " +
+                "cmd appops set com.android.settings SCHEDULE_EXACT_ALARM ignore 2>/dev/null";
+        } else {
+            return "pm enable com.android.settings/com.xrz.settings.receiver.PowersaveShutDownAlarmReceiver 2>/dev/null; " +
+                "rm -f /data/system/ifw/block_bigme_shutdown.xml 2>/dev/null; " +
+                "cmd appops set com.android.settings SCHEDULE_EXACT_ALARM allow 2>/dev/null";
+        }
+    }
+
+    public static String getSuppressJsIdleCmd(boolean enable) {
+        if (enable) {
+            return "cmd jobscheduler cancel-all cn.wps.moffice_eng 2>/dev/null; " +
+                "cmd jobscheduler cancel-all org.koreader.launcher 2>/dev/null; " +
+                "device_config put jobscheduler min_ready_non_active_jobs_count 99 2>/dev/null; " +
+                "settings put global job_scheduler_constants min_ready_non_active_jobs_count=99 2>/dev/null";
+        } else {
+            return "device_config put jobscheduler min_ready_non_active_jobs_count 10 2>/dev/null; " +
+                "settings put global job_scheduler_constants min_ready_non_active_jobs_count=10 2>/dev/null";
+        }
+    }
+
+    public static String getWideAlarmFuzzCmd(boolean enable) {
+        if (enable) {
+            return "device_config put alarm_manager min_futurity 60000 2>/dev/null; " +
+                "device_config put alarm_manager min_device_idle_fuzz 600000 2>/dev/null; " +
+                "device_config put alarm_manager max_device_idle_fuzz 2700000 2>/dev/null; " +
+                "device_config put alarm_manager time_tick_allowed_while_idle false 2>/dev/null; " +
+                "device_config put alarm_manager allow_while_idle_quota 6 2>/dev/null; " +
+                "settings put global alarm_manager_constants min_futurity=60000,min_device_idle_fuzz=600000,max_device_idle_fuzz=2700000,time_tick_allowed_while_idle=false,allow_while_idle_quota=6,delay_nonwakeup_alarms_while_screen_off=true 2>/dev/null";
+        } else {
+            return "device_config put alarm_manager min_futurity 60000 2>/dev/null; " +
+                "device_config put alarm_manager min_device_idle_fuzz 300000 2>/dev/null; " +
+                "device_config put alarm_manager max_device_idle_fuzz 600000 2>/dev/null; " +
+                "settings delete global alarm_manager_constants 2>/dev/null";
+        }
+    }
+
+    public static String getInstantLockCmd(boolean enable) {
+        if (enable) {
+            return "settings put secure lock_screen_lock_after_timeout 0 2>/dev/null";
+        } else {
+            return "settings put secure lock_screen_lock_after_timeout 5000 2>/dev/null";
+        }
     }
 
     public static String getBucketLabel(int bucket) {

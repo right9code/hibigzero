@@ -94,7 +94,7 @@ public class AppInstaller {
             "cmd appops set com.mixplorer MANAGE_EXTERNAL_STORAGE allow"),
         new AppDef("localsend", "LocalSend", "localsend/localsend",
             "LocalSend-.*-android-arm64v8\\.apk",
-            false, "org.localsend.localsend",
+            false, "org.localsend.localsend_app",
             "Offline cross-platform file sharing"),
     };
 

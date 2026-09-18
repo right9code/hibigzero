@@ -20,7 +20,8 @@ HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 
 * **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale instead of a hardcoded width-based scaler.
 * **Density-independent layout** — all padding, margins, and dividers use dp, so the UI scales correctly across screen densities.
-* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.0.0`), and author (`by right9code`).
+* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.3.0`), and author (`by right9code`).
+* **UPDATE button** — one-tap GitHub release checker with in-app download, progress, and self-install.
 * **Clean tab bar** — tabs are visually separated from the banner and from each other, use fixed labels, and mark the active tab with an underline indicator instead of a `>>` prefix.
 * **Collapsible sections** — every section header (`HARDWARE`, `DEBLOAT`, `NETWORK`, `POWER`, `PACKAGE MANAGER`, and the Battery sections) can be tapped to collapse or expand its body.
 * **Package Manager clarity** — the second tab is now `PACKAGE MANAGER` with a `FREEZE, UNFREEZE, OR RESTRICT` description. Each app row shows the name, package, and a plain-language status line (`Not frozen | background: allowed | doze optimized | usage: ...`) with `FREEZE`/`UNFREEZE` and `OPTIONS` stacked on the right.
@@ -28,6 +29,43 @@ HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 * **Removed non-essential controls** — `PAGE UP`/`PAGE DOWN` and the bulk `FREEZE ALL`/`UNFREEZE ALL`/`RESTRICT USR` shortcuts were removed; per-app actions remain in each row.
 * **Strict 1-bit monochrome styling** — all buttons, the search field, and the tab bar use explicit black/white bordered drawables, eliminating the system grey Material backgrounds.
 * **E-ink friendly glyphs** — emoji and pictographs in menus and buttons were replaced with ASCII-safe labels for predictable rendering.
+
+---
+
+## 📦 App Installer (APPS Tab)
+
+HiBig Zero includes a built-in **App Installer** that downloads, installs, and manages essential apps directly from GitHub releases — no Play Store or browser needed.
+
+### Managed Apps
+
+| App | Source | Install Type |
+|-----|--------|-------------|
+| **AnyHome** | [right9code/AnyHome](https://github.com/right9code/AnyHome) | Magisk system app |
+| **KOReader** | [koreader/koreader](https://github.com/koreader/koreader) | User app |
+| **E-Ink Bro** | [plateaukao/einkbro](https://github.com/plateaukao/einkbro) | User app |
+| **Obsidian** | [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases) | User app |
+| **MiXplorer** | [driftywinds/mixplorer-releases](https://github.com/driftywinds/mixplorer-releases) | User app |
+| **LocalSend** | [localsend/localsend](https://github.com/localsend/localsend) | User app |
+
+### Features
+* **Resume & retry** — downloads resume from where they left off if the connection drops, with 3 retries and exponential backoff.
+* **APK verification** — file size is checked against the GitHub API before installing.
+* **SELinux-safe installs** — APKs are staged to `/data/local/tmp/` with `chmod 644` before `pm install -r -d -g`.
+* **MANAGE_EXTERNAL_STORAGE** — automatically granted to KOReader, MiXplorer, and Obsidian on Android 14.
+* **Magisk system app support** — AnyHome is installed as a systemless Magisk module to `/system/priv-app/`.
+* **Version comparison** — skips download if already on the latest version, handles `-rc1`/`-beta` suffixes.
+
+---
+
+## 🔄 Self-Updater
+
+Tap the **UPDATE** button in the header to check for new releases of HiBig Zero itself:
+
+* Fetches the latest release from `right9code/hibigzero` via GitHub API
+* Compares installed version with the latest tag
+* Shows release notes and a one-tap **UPDATE NOW** or **REINSTALL** button
+* Downloads with progress percentage, installs via root `pm install`
+* Handles HTTP redirects, resume on failure, and APK verification
 
 ---
 
@@ -90,9 +128,14 @@ HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 graph TD
     App[HiBig Zero UI] --> Config[ConfigManager]
     App --> Shell[ShellUtils ProcessBuilder]
+    App --> Installer[AppInstaller Engine]
+    App --> Updater[Self-Updater Engine]
     
     Shell -->|Root su -c| Kernel[Linux Kernel 4.19 / MT6765]
     Shell -->|Root su -c| AndroidOS[Android 14 Framework]
+    
+    Installer -->|GitHub API| GitHub[GitHub Releases]
+    Updater -->|GitHub API| GitHub
     
     Kernel --> PPM["/proc/ppm/policy_status (Policy 7 Uncap)"]
     Kernel --> Hotplug["/sys/devices/system/cpu/cpu4-7/online (Hotplug)"]
@@ -133,16 +176,17 @@ If your Bigme HiBreak is not yet rooted, follow the comprehensive step-by-step g
 * **Root:** Magisk v26+ installed (see [Rooting Guide](docs/ROOTING_GUIDE.md))
 
 ### Steps
-1. Download the latest APK from the [Releases](releases/) folder:
+1. Download the latest APK from [Releases](https://github.com/right9code/hibigzero/releases/latest):
    ```sh
-   HiBigZero-v1.0.0-release.apk
+   HiBigZero-v1.3.0-release.apk
    ```
 2. Install via ADB:
    ```sh
-   adb install -r HiBigZero-v1.0.0-release.apk
+   adb install -r HiBigZero-v1.3.0-release.apk
    ```
 3. Open **HiBig Zero** on your device and grant Root (Superuser) permissions when prompted by Magisk.
 4. Tweak your desired toggles or switch to **E-Reader Mode** on Tab 1.
+5. Use the **UPDATE** button in the header to check for future updates.
 
 ---
 
@@ -159,7 +203,7 @@ The repository includes a zero-dependency build script that compiles Java 8 sour
 ```sh
 python3 build.py
 ```
-The compiled, aligned, and signed APK will be generated under `releases/HiBigZero-v1.0.0-release.apk` along with its SHA-256 checksum file.
+The compiled, aligned, and signed APK will be generated under `releases/HiBigZero-v1.3.0-release.apk` along with its SHA-256 checksum file.
 
 ---
 

@@ -913,14 +913,31 @@ public class MainActivity extends Activity {
 
     /** Open update dialog and check for latest HiBig Zero release from GitHub. */
     private void showUpdateDialog() {
+        final LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
+
         final TextView msgView = new TextView(this);
-        msgView.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
         setSp(msgView, 11);
         msgView.setTextColor(Color.BLACK);
         msgView.setText("Checking GitHub for HiBig Zero updates...\nTarget: " + Updater.REPO);
+        container.addView(msgView);
+
+        // Action button — hidden initially, shown when needed
+        final Button actionBtn = new Button(this);
+        setSp(actionBtn, 11);
+        actionBtn.setTextColor(Color.BLACK);
+        actionBtn.setBackgroundColor(Color.WHITE);
+        actionBtn.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        btnParams.topMargin = dpToPx(12);
+        actionBtn.setLayoutParams(btnParams);
+        actionBtn.setVisibility(View.GONE);
+        container.addView(actionBtn);
 
         ScrollView scroller = new ScrollView(this);
-        scroller.addView(msgView);
+        scroller.addView(container);
 
         final AlertDialog dialog = new AlertDialog.Builder(this)
             .setTitle("HiBig Zero Update")
@@ -949,12 +966,14 @@ public class MainActivity extends Activity {
                     public void run() {
                         if (!dialog.isShowing()) return;
                         msgView.setText("HiBig Zero is up to date!\n\n" +
-                            "• Installed version: v" + currentVersion + "\n" +
-                            "• Latest release:    v" + latestVersion + "\n\n" +
-                            "Would you like to reinstall v" + latestVersion + "?");
-                        dialog.setButton(DialogInterface.BUTTON_POSITIVE, "REINSTALL", new DialogInterface.OnClickListener() {
+                            "* Installed version: v" + currentVersion + "\n" +
+                            "* Latest release:  v" + latestVersion);
+                        actionBtn.setText("REINSTALL v" + latestVersion);
+                        actionBtn.setVisibility(View.VISIBLE);
+                        actionBtn.setOnClickListener(new View.OnClickListener() {
                             @Override
-                            public void onClick(DialogInterface d, int which) {
+                            public void onClick(View v) {
+                                actionBtn.setVisibility(View.GONE);
                                 msgView.setText("Starting download for v" + latestVersion + "...");
                                 forceInstall.run();
                             }
@@ -973,12 +992,15 @@ public class MainActivity extends Activity {
                         String notes = releaseNotes.length() > 600
                             ? releaseNotes.substring(0, 600) + "..." : releaseNotes;
                         msgView.setText("New version available!\n\n" +
-                            "• Installed version: v" + currentVersion + "\n" +
-                            "• Latest version:    v" + latestVersion + "\n\n" +
+                            "* Installed: v" + currentVersion + "\n" +
+                            "* Latest:    v" + latestVersion + "\n\n" +
                             "Release Notes:\n" + (notes.isEmpty() ? "(No notes)" : notes));
-                        dialog.setButton(DialogInterface.BUTTON_POSITIVE, "UPDATE NOW", new DialogInterface.OnClickListener() {
+                        actionBtn.setText("UPDATE NOW");
+                        actionBtn.setVisibility(View.VISIBLE);
+                        actionBtn.setOnClickListener(new View.OnClickListener() {
                             @Override
-                            public void onClick(DialogInterface d, int which) {
+                            public void onClick(View v) {
+                                actionBtn.setVisibility(View.GONE);
                                 msgView.setText("Starting download for v" + latestVersion + "...");
                                 proceed.run();
                             }
@@ -1010,9 +1032,11 @@ public class MainActivity extends Activity {
                         if (!dialog.isShowing()) return;
                         msgView.setText((success ? "[SUCCESS]\n\n" : "[FAILED]\n\n") + message);
                         if (success) {
-                            dialog.setButton(DialogInterface.BUTTON_POSITIVE, "RELAUNCH", new DialogInterface.OnClickListener() {
+                            actionBtn.setText("RELAUNCH");
+                            actionBtn.setVisibility(View.VISIBLE);
+                            actionBtn.setOnClickListener(new View.OnClickListener() {
                                 @Override
-                                public void onClick(DialogInterface d, int which) {
+                                public void onClick(View v) {
                                     ShellUtils.execRoot("am start -n com.right9code.hibigzero/.MainActivity");
                                 }
                             });

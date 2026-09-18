@@ -138,7 +138,7 @@ public class MainActivity extends Activity {
         headerTop.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("HiBiG ZERO  v1.3.0");
+        title.setText("HiBiG ZERO  v1.3.1");
         setSp(title, 15);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(Color.WHITE);
@@ -469,6 +469,157 @@ public class MainActivity extends Activity {
             "settings put global background_process_limit -1 2>/dev/null",
             "settings get global background_process_limit",
             logDrawer);
+
+
+        // ── CAPACITIVE_KEYS: Freeze/Unfreeze ebook.launcher for side-button config ──
+        {
+            final String capPkg = "com.xrz.ebook.launcher";
+
+            // Card with 2dp solid black border
+            final LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+            card.setLayoutParams(clp);
+            card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+            card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+            // Top row: title + pill
+            LinearLayout topRow = new LinearLayout(this);
+            topRow.setOrientation(LinearLayout.HORIZONTAL);
+            topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            TextView tTitle = new TextView(this);
+            tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            tTitle.setText("CAPACITIVE_KEYS");
+            setSp(tTitle, 12);
+            tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            tTitle.setTextColor(Color.BLACK);
+
+            final TextView pillBtn = new TextView(this);
+            pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(pillBtn, 12);
+            pillBtn.setGravity(Gravity.CENTER);
+            pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+            topRow.addView(tTitle);
+            topRow.addView(pillBtn);
+            card.addView(topRow);
+
+            // Description
+            TextView descView = new TextView(this);
+            setSp(descView, 10);
+            descView.setTextColor(Color.BLACK);
+            descView.setText("Unfreeze Bigme launcher to configure Custom Keys");
+            descView.setPadding(0, dpToPx(4), 0, dpToPx(6));
+            card.addView(descView);
+
+            // Button row
+            LinearLayout btnRow = new LinearLayout(this);
+            btnRow.setOrientation(LinearLayout.HORIZONTAL);
+            btnRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            final Button capToggleBtn = new Button(this);
+            setSp(capToggleBtn, 10);
+            capToggleBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            capToggleBtn.setTextColor(Color.BLACK);
+            capToggleBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
+            capToggleBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+            LinearLayout.LayoutParams togLp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+            togLp.rightMargin = dpToPx(4);
+            capToggleBtn.setLayoutParams(togLp);
+            btnRow.addView(capToggleBtn);
+
+            final Button capOpenBtn = new Button(this);
+            setSp(capOpenBtn, 10);
+            capOpenBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            capOpenBtn.setText("OPEN SETTINGS");
+            capOpenBtn.setTextColor(Color.BLACK);
+            capOpenBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
+            capOpenBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+            LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+            capOpenBtn.setLayoutParams(openLp);
+            btnRow.addView(capOpenBtn);
+
+            card.addView(btnRow);
+
+            // Update UI state
+            final Runnable updateCapState = new Runnable() {
+                @Override
+                public void run() {
+                    boolean enabled = false;
+                    try {
+                        enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
+                    } catch (Exception e) { /* not installed */ }
+                    if (enabled) {
+                        pillBtn.setText("[ ACTIVE ]");
+                        pillBtn.setTextColor(Color.BLACK);
+                        pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                        capToggleBtn.setText("FREEZE");
+                        capOpenBtn.setEnabled(true);
+                        capOpenBtn.setAlpha(1.0f);
+                    } else {
+                        pillBtn.setText("[ FROZEN ]");
+                        pillBtn.setTextColor(Color.WHITE);
+                        pillBtn.setBackgroundColor(Color.BLACK);
+                        capToggleBtn.setText("UNFREEZE");
+                        capOpenBtn.setEnabled(false);
+                        capOpenBtn.setAlpha(0.4f);
+                    }
+                }
+            };
+            updateCapState.run();
+
+            capToggleBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    boolean enabled = false;
+                    try {
+                        enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
+                    } catch (Exception e) { /* not installed */ }
+                    capToggleBtn.setEnabled(false);
+                    final boolean wasEnabled = enabled;
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (wasEnabled) {
+                                ShellUtils.execRoot("pm disable-user --user 0 " + capPkg);
+                            } else {
+                                ShellUtils.execRoot("pm enable " + capPkg);
+                            }
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    capToggleBtn.setEnabled(true);
+                                    updateCapState.run();
+                                }
+                            });
+                        }
+                    }).start();
+                }
+            });
+
+            capOpenBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    try {
+                        android.content.Intent intent = new android.content.Intent();
+                        intent.setComponent(new android.content.ComponentName(
+                            "com.xrz.ebook.launcher",
+                            "com.xrz.launcher.settings.CustomMenuActivity"));
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(intent);
+                    } catch (Exception e) {
+                        Toast.makeText(MainActivity.this,
+                            "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
+
+            addSectionContent(card);
+        }
 
         // ── Section: DEBLOAT ───────────────────────────────────────────────
         addSectionHeader("DEBLOAT");

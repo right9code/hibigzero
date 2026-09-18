@@ -13,12 +13,28 @@ obj/
 *.jks
 *.key
 
-# Android Studio / IntelliJ
+# Android Studio / IntelliJ / VS Code
 .idea/
 .gradle/
 *.iml
 local.properties
+.vscode/
 .DS_Store
+
+# AI coding assistants
+.claude/
+.kilo/
+.kilocode/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Device & hardware dumps
+hwparam.json
 
 # Logs
 *.log

@@ -8,7 +8,6 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.util.Properties;
 
 public class ScreenReceiver extends BroadcastReceiver {
@@ -82,13 +81,10 @@ public class ScreenReceiver extends BroadcastReceiver {
     }
 
     private void saveActiveGov(String profile) {
-        try {
-            FileWriter fw = new FileWriter(ACTIVE_GOV_FILE, false);
-            fw.write(profile);
-            fw.close();
-        } catch (Exception e) {
-            ShellUtils.execRoot("echo '" + profile + "' > " + ACTIVE_GOV_FILE);
-        }
+        // /data/local/tmp is not writable by the app UID — write via root and
+        // chmod 666 so readActiveGov() (running as the app) can read it back.
+        ShellUtils.execRoot("printf '%s' '" + profile + "' > " + ACTIVE_GOV_FILE +
+            " && chmod 666 " + ACTIVE_GOV_FILE, false);
     }
 
     private String readActiveGov() {

@@ -1,7 +1,6 @@
 package com.right9code.hibigzero;
 
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.BufferedReader;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -479,9 +478,13 @@ public class ConfigManager {
             for (String key : CONF_KEYS) {
                 sb.append(key).append("=").append(p.getProperty(key, "")).append("\n");
             }
-            FileWriter fw = new FileWriter(CONF_PATH);
-            fw.write(sb.toString());
-            fw.close();
+            // Write via root — Java FileWriter can't write to /data/local/tmp (owned by shell:shell)
+            ShellUtils.CommandResult r = ShellUtils.execRoot(
+                "printf '" + sb.toString().replace("'", "'\\''") + "' > " + CONF_PATH +
+                " && chmod 666 " + CONF_PATH + " 2>/dev/null", false);
+            if (!r.isSuccess()) {
+                ShellUtils.appendLog("saveConfig failed (exit=" + r.exitCode + "): " + r.stderr);
+            }
         } catch (Exception e) {
             ShellUtils.appendLog("saveConfig error: " + e.getMessage());
         }

@@ -34,6 +34,9 @@ public class MainActivity extends Activity {
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private TextView headerBatteryView;
     private Runnable headerBatteryUpdater;
+
+    /** HiBreak Li-ion pack capacity per spec sheet (used for runtime projections). */
+    private static final double BATTERY_CAPACITY_MAH = 2100.0;
     private Runnable diagBatteryUpdater;
     private boolean diagBatteryRunning = false;
     private boolean diagBatteryPaused = false;
@@ -138,7 +141,7 @@ public class MainActivity extends Activity {
         headerTop.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("HiBiG ZERO  v1.3.1");
+        title.setText("HiBiG ZERO  v1.3.2");
         setSp(title, 15);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(Color.WHITE);
@@ -334,9 +337,11 @@ public class MainActivity extends Activity {
     }
 
     private int parseCurrent(String raw) {
+        // current_now reports microamps — always convert to milliamps.
         try {
-            int v = Integer.parseInt(raw.trim().replace("-", ""));
-            return v > 10000 ? v / 1000 : v;
+            long v = Long.parseLong(raw.trim().replace("-", ""));
+            long ma = Math.round(v / 1000.0);
+            return (int) Math.min(ma, Integer.MAX_VALUE);
         } catch (Exception e) { return 0; }
     }
 
@@ -728,9 +733,11 @@ public class MainActivity extends Activity {
                         public void onClick(DialogInterface d, int which) {
                             String selected = vals[which];
                             currentConfig.setProperty("GOVERNOR_PROFILE", selected);
-                            if ("ereader_battery".equals(selected)) {
-                                currentConfig.setProperty("HOTPLUG_4_CORES", "1");
-                            }
+                            // Only the E-Reader profile wants 4 cores offline; any
+                            // other profile must clear the latch or buildGovernorCmd()
+                            // keeps cores 4-7 offline forever (even for stock/8-core).
+                            currentConfig.setProperty("HOTPLUG_4_CORES",
+                                "ereader_battery".equals(selected) ? "1" : "0");
                             ConfigManager.saveConfig(currentConfig);
                             wakeVal.setText(ConfigManager.getGovernorLabel(selected));
                             ShellUtils.execRoot(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
@@ -2877,32 +2884,20 @@ public class MainActivity extends Activity {
         diagBatteryUpdater = new Runnable() {
             @Override
             public void run() {
-                if (!diagBatteryRunning) return;
-                if (!diagBatteryPaused) {
-                    new Thread(new Runnable() {
-                        @Override
-                        public void run() {
-                            String cmd = "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
-                                         "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
-                                         "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
-                                         "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
-                                         "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
-                                         "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
-                                         "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
-                                         "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
-                                         "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
-                                         "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
-                                         "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
-                                         "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM\"";
-                            ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
-                            final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
-                            mainHandler.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (!diagBatteryRunning) return;
-                                    updateDiagUi(out, currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
-                                }
-                            });
+                 if (!diagBatteryRunning) return;
+                 if (!diagBatteryPaused) {
+                     new Thread(new Runnable() {
+                         @Override
+                         public void run() {
+                             ShellUtils.CommandResult res = ShellUtils.execRoot(buildDiagShellCmd(), false);
+                             final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
+                             mainHandler.post(new Runnable() {
+                                 @Override
+                                 public void run() {
+                                     if (!diagBatteryRunning) return;
+                                     updateDiagUi(out, currentBox, batteryDetailsBox, gaugeBox, projBox, cpuBox);
+                                 }
+                             });
                         }
                     }).start();
                 }
@@ -2926,7 +2921,19 @@ public class MainActivity extends Activity {
         sleepTest.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                ShellUtils.execRoot("nohup sh /data/local/tmp/full_diag.sh 600 > /data/local/tmp/diag.log 2>&1 &");
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        // The sampler ships as an app asset — stage it to
+                        // /data/local/tmp (root-only path) before launching.
+                        if (!deployAsset("drain_sampler.sh", "/data/local/tmp/drain_sampler.sh")) {
+                            ShellUtils.appendLog("Deep sleep test: failed to stage drain_sampler.sh");
+                            return;
+                        }
+                        ShellUtils.execRoot("nohup sh /data/local/tmp/drain_sampler.sh 600 > /data/local/tmp/diag.log 2>&1 &", false);
+                        ShellUtils.appendLog("Deep sleep test started — log: /data/local/tmp/diag/drain_sample.log");
+                    }
+                }).start();
             }
         });
         addSectionContent(sleepTest);
@@ -2966,19 +2973,7 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                String cmd = "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
-                             "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
-                             "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
-                             "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
-                             "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
-                             "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
-                             "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
-                             "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
-                             "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
-                             "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
-                             "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
-                             "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM\"";
-                ShellUtils.CommandResult res = ShellUtils.execRoot(cmd, false);
+                ShellUtils.CommandResult res = ShellUtils.execRoot(buildDiagShellCmd(), false);
                 final String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
                 mainHandler.post(new Runnable() {
                     @Override
@@ -2988,6 +2983,25 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    /**
+     * Single source of truth for the diagnostics probe. Fields are pipe-separated:
+     * cur|cap|status|volt|temp|cpus|f0|g0|f4|g4|ppm
+     */
+    private String buildDiagShellCmd() {
+        return "CUR=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null); " +
+               "CAP=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); " +
+               "STA=$(cat /sys/class/power_supply/battery/status 2>/dev/null); " +
+               "VOLT=$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null); " +
+               "TEMP=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); " +
+               "ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null); " +
+               "F0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq 2>/dev/null); " +
+               "G0=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null); " +
+               "F4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq 2>/dev/null); " +
+               "G4=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor 2>/dev/null); " +
+               "PPM=$(cat /proc/ppm/policy_status 2>/dev/null | grep PPM_POLICY_USER_LIMIT); " +
+               "echo \"$CUR|$CAP|$STA|$VOLT|$TEMP|$ONLINE|$F0|$G0|$F4|$G4|$PPM\"";
     }
 
     private void updateDiagUi(String raw, TextView currentBox, TextView batteryDetailsBox,
@@ -3038,11 +3052,15 @@ public class MainActivity extends Activity {
         for (int i = 0; i < empty; i++) bar.append(".");
         gaugeBox.setText("BATTERY: " + cap + "%  " + bar.toString() + "  [" + st + "]");
 
-        double hrs = ma > 0 ? (2100.0 / ma) : 0;
+        // HiBreak spec-sheet capacity (2100 mAh). Used for the runtime projection.
+        double capacityMah = BATTERY_CAPACITY_MAH;
+
+        double hrs = ma > 0 ? (capacityMah / ma) : 0;
+        int standbyDays = (int) Math.round(capacityMah / 2.5 / 24);
         String proj = isCharging
             ? "STATE: CHARGING  |  CAPACITY: " + cap + "%\nPOWER OFF: 0.00 mA (infinite retention)"
-            : "ACTIVE RUNTIME: ~" + String.format(java.util.Locale.US, "%.1f", hrs) + " hrs  (" + ma + " mA)\n" +
-              "STANDBY: ~2.5 mA (~35 days)  |  POWER OFF: 0.00 mA";
+            : "ACTIVE RUNTIME: ~" + String.format(java.util.Locale.US, "%.1f", hrs) + " hrs  (" + ma + " mA @ " + (int) capacityMah + " mAh)\n" +
+              "STANDBY: ~2.5 mA (~" + standbyDays + " days)  |  POWER OFF: 0.00 mA";
         projBox.setText(proj);
 
         // CPU & SoC Status
@@ -3081,6 +3099,34 @@ public class MainActivity extends Activity {
         cpuSb.append("AUTO-SHUTDOWN: ").append("1".equals(shutdownEnabled) ? "[ALARM] " + timeoutMin + "m timeout" : "[DISABLED]").append("\n");
 
         cpuBox.setText(cpuSb.toString());
+    }
+
+    /**
+     * Copy an app asset to a root-only destination path (e.g. /data/local/tmp)
+     * and make it executable. The app process itself cannot write there.
+     * Returns true on success.
+     */
+    private boolean deployAsset(String assetName, String destPath) {
+        java.io.File staged = null;
+        try {
+            staged = new java.io.File(getCacheDir(), assetName);
+            java.io.InputStream is = getAssets().open(assetName);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(staged);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+            fos.close();
+            is.close();
+            ShellUtils.CommandResult r = ShellUtils.execRoot(
+                "cp " + staged.getAbsolutePath() + " " + destPath +
+                " && chmod 755 " + destPath, false);
+            return r.isSuccess();
+        } catch (Exception e) {
+            ShellUtils.appendLog("deployAsset error: " + e.getMessage());
+            return false;
+        } finally {
+            if (staged != null) staged.delete();
+        }
     }
 
     private String formatFreq(String khz) {

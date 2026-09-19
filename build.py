@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HiBig Zero - Standalone Release APK Builder v1.3.1
+HiBig Zero - Standalone Release APK Builder v1.3.2
 Author: right9code
 Target: Bigme HiBreak B6 BW / Color (MediaTek MT6765 Helio P35) | Android 14
 Package: com.right9code.hibigzero
@@ -32,13 +32,13 @@ def ensure_keystore():
 
 def build_release():
     print("=" * 60)
-    print("HiBig Zero v1.3.1 Release APK Builder")
+    print("HiBig Zero v1.3.2 Release APK Builder")
     print("Package: com.right9code.hibigzero")
     print("Author:  right9code")
     print("=" * 60)
 
     ensure_keystore()
-    final_apk = os.path.join(RELEASES_DIR, "HiBigZero-v1.3.1-release.apk")
+    final_apk = os.path.join(RELEASES_DIR, "HiBigZero-v1.3.2-release.apk")
     checksum_file = final_apk + ".sha256"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -126,7 +126,7 @@ def build_release():
             h.update(chunk)
     sha256_str = h.hexdigest()
     with open(checksum_file, "w") as f:
-        f.write(f"{sha256_str}  HiBigZero-v1.3.1-release.apk\n")
+        f.write(f"{sha256_str}  HiBigZero-v1.3.2-release.apk\n")
 
     size_bytes = os.path.getsize(final_apk)
     print("=" * 60)

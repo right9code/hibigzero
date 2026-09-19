@@ -11,6 +11,15 @@ WS=/sys/kernel/debug/wakeup_sources
 LIGHT_SEC=900     # 15 min between cheap samples
 HEAVY_EVERY=2     # heavy snapshot every 2 light samples (30 min)
 
+# Optional $1: total run length in seconds. When set, compress the sampling
+# interval into that window and exit when it elapses (used by the "10-min deep
+# sleep test" button). Without $1 the sampler runs until the charger is attached.
+DURATION="${1:-0}"
+if [ "$DURATION" -gt 0 ] 2>/dev/null; then
+  LIGHT_SEC=$(( DURATION / 4 ))
+  [ "$LIGHT_SEC" -lt 60 ] && LIGHT_SEC=60
+fi
+
 mkdir -p "$OUT"
 
 snapshot_heavy() {
@@ -56,6 +65,7 @@ done
 echo "=== DISCHARGING DETECTED $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG"
 snapshot_heavy
 
+START=$(date +%s)
 i=0
 while true; do
   # stop logging once plugged back in
@@ -65,6 +75,17 @@ while true; do
     snapshot_heavy
     echo "=== BASELINE END ===" >> "$LOG"
     exit 0
+  fi
+
+  # Stop once the requested run length has elapsed (duration-limited mode)
+  if [ "$DURATION" -gt 0 ] 2>/dev/null; then
+    NOW=$(date +%s)
+    if [ $(( NOW - START )) -ge "$DURATION" ]; then
+      echo "=== DURATION REACHED (${DURATION}s) $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$LOG"
+      snapshot_heavy
+      echo "=== BASELINE END ===" >> "$LOG"
+      exit 0
+    fi
   fi
 
   light_sample

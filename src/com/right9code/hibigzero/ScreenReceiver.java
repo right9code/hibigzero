@@ -11,7 +11,20 @@ import java.io.FileReader;
 import java.util.Properties;
 
 public class ScreenReceiver extends BroadcastReceiver {
-    private static final String ACTIVE_GOV_FILE = "/data/local/tmp/hibreak_active_gov.txt";
+    /** Shared with BootReceiver: after a boot the configured profile is applied, so
+     *  a marker left over from before the reboot no longer describes reality. */
+    public static final String ACTIVE_GOV_FILE = "/data/local/tmp/hibreak_active_gov.txt";
+
+    /**
+     * Deletes the active-governor marker. Via root, not File.delete():
+     * /data/local/tmp is 0771 owned by shell, so this app has no write permission
+     * on the directory and unlinking there fails even for a file it owns. That
+     * silent failure once left the marker behind permanently, which made it
+     * useless as a "a clamp is currently applied" flag.
+     */
+    public static void clearActiveGovMarker() {
+        ShellUtils.execRoot("rm -f " + ACTIVE_GOV_FILE, false);
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -71,12 +84,7 @@ public class ScreenReceiver extends BroadcastReceiver {
                         String cmd = ConfigManager.buildGovernorCmd(savedGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
                         ShellUtils.execRootAction(cmd);
-                        // Removed via root, not File.delete(): /data/local/tmp is 0771 and
-                        // owned by shell, so this app has no write permission on the
-                        // directory and unlinking there fails even for a file it owns.
-                        // The old silent failure left the marker behind forever, which
-                        // made it useless as a "a clamp is currently applied" flag.
-                        ShellUtils.execRoot("rm -f " + ACTIVE_GOV_FILE, false);
+                        clearActiveGovMarker();
                         Log.i("ScreenReceiver", "Wake governor restored");
                     }
                 } catch (Exception e) {

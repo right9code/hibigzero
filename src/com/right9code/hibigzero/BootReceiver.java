@@ -156,6 +156,11 @@ public class BootReceiver extends BroadcastReceiver {
         String govProfile = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         String hotplug4   = cfg.getProperty("HOTPLUG_4_CORES", "0");
         ShellUtils.execRootAction(ConfigManager.buildGovernorCmd(govProfile, hotplug4));
+        // The profile just applied IS the configured one, so any screen-off clamp
+        // from before the reboot is gone. Clear its marker, or it would claim a
+        // clamp is in effect when it is not - the boot pass re-applies the wake
+        // profile but does not go through the screen-on path that clears it.
+        ScreenReceiver.clearActiveGovMarker();
 
         // 10b. CPU uncap. Own key now (it used to overwrite GOVERNOR_PROFILE with
         //      "1"). Applied after the profile so it clears any stale PPM clamp.

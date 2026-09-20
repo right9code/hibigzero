@@ -227,6 +227,52 @@ public class ChargeLimitController {
         lastAction = action;
     }
 
+    /**
+     * Reads the switch node itself rather than trusting the in-memory flag, so what
+     * the UI shows is what the device is actually doing - including after a reboot
+     * or when another process moved the switch.
+     */
+    private static boolean switchStopped() {
+        for (String[] sw : ConfigManager.CHARGE_SWITCHES) {
+            String out = ShellUtils.execRoot("cat " + sw[0] + " 2>/dev/null", false).stdout.trim();
+            if (out.isEmpty()) continue;
+            return out.equals(sw[1]);
+        }
+        return false;
+    }
+
+    /**
+     * One-line plain-language state for the UI card.
+     *
+     * The "unplug briefly once" hint exists because a ceiling can only hold a level
+     * it can reach: stopping the charger does not pull a full pack down on its own,
+     * since the phone runs off the charger while charging is stopped. Without the
+     * hint, sitting at 100% looks like the feature is broken.
+     */
+    public static String describe(Context ctx) {
+        refreshConfig(ctx);
+        int level = batteryLevel(ctx);
+        String lvl = level < 0 ? "?" : level + "%";
+
+        if (!isPlugged(ctx)) {
+            return "ON BATTERY - charging restored, waiting for a charger";
+        }
+        boolean stopped;
+        try {
+            stopped = switchStopped();
+        } catch (Throwable t) {
+            stopped = false;
+        }
+        if (stopped) {
+            if (level > target + 3) {
+                return "HOLDING at " + lvl + " (target " + target
+                    + "%) - unplug briefly once to settle into the band";
+            }
+            return "HOLDING at " + lvl + " (target " + target + "%, resume " + resumeAt + "%)";
+        }
+        return "CHARGING allowed - " + lvl + " up to " + target + "%";
+    }
+
     // ── Alarm plumbing ───────────────────────────────────────────────────
 
     private static PendingIntent tickIntent(Context ctx) {

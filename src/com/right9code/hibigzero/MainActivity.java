@@ -45,6 +45,9 @@ public class MainActivity extends Activity {
     private int debloatSortMode = 0;
     private String debloatSearch = "";
     private Runnable searchDebounceRunnable = null;
+    // Refreshes the CHARGE_LIMIT state line after the controller has acted. Set up
+    // when the SYSTEM tab renders; null when the device has no charge switch.
+    private Runnable chargeLimitStateRefresh = null;
     private List<AppItem> cachedAppItems = null;
     // Rows are appended to the package list in slices of this size so one UI-thread
     // task never carries the whole list (220 rows measured ~610 ms in a single pass).
@@ -883,6 +886,7 @@ public class MainActivity extends Activity {
                     @Override
                     public void run() {
                         ChargeLimitController.applyConfig(MainActivity.this);
+                        if (chargeLimitStateRefresh != null) chargeLimitStateRefresh.run();
                     }
                 });
 
@@ -931,6 +935,7 @@ public class MainActivity extends Activity {
                                 lVal.setText(vals[which] + "%  (resume "
                                     + Math.max(50, vals[which] - 5) + "%)");
                                 ChargeLimitController.applyConfig(MainActivity.this);
+                                if (chargeLimitStateRefresh != null) chargeLimitStateRefresh.run();
                             }
                         }).show();
                 }
@@ -940,6 +945,34 @@ public class MainActivity extends Activity {
             limitRow.addView(lVal);
             limitRow.addView(changeLimit);
             addSectionContent(limitRow);
+
+            // Live state line. Reads the switch node, so it reports what the device
+            // is doing rather than what the app intended. Updated on render, after a
+            // toggle and after a target change - never on a timer, because repainting
+            // text on e-ink costs a screen refresh.
+            final TextView lState = new TextView(this);
+            lState.setText(ChargeLimitController.describe(this));
+            setSp(lState, 10);
+            lState.setTypeface(Typeface.DEFAULT);
+            lState.setTextColor(Color.BLACK);
+            lState.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
+            lState.setBackgroundColor(Color.WHITE);
+            addSectionContent(lState);
+
+            final Runnable refreshState = new Runnable() {
+                @Override
+                public void run() {
+                    lState.setText(ChargeLimitController.describe(MainActivity.this));
+                }
+            };
+            chargeLimitStateRefresh = new Runnable() {
+                @Override
+                public void run() {
+                    // The controller does its work on a background thread, so give it
+                    // a moment before asking the device what it settled on.
+                    mainHandler.postDelayed(refreshState, 3000);
+                }
+            };
         } else {
             addUnavailableToggle("CHARGE_LIMIT",
                 "This device exposes no charge-control switch, and unlike the old "

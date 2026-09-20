@@ -15,6 +15,18 @@ public class HiBigApp extends Application {
     public void onCreate() {
         super.onCreate();
         appContext = getApplicationContext();
+        // Reconcile before registering: if this process start was caused by something
+        // that happened while the screen was already on, a clamp may be sitting
+        // there from a previous life of this app. HiBigApp.onCreate runs for every
+        // process start, including receiver-only ones, so this covers the boot,
+        // power and alarm entry points too.
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                GovernorReconciler.reconcileIfInteractive(appContext, "app start");
+            }
+        }).start();
+
         Properties cfg = ConfigManager.loadConfig();
         String enabled = cfg.getProperty("SLEEP_GOVERNOR_ENABLED", "1");
         Log.i("HiBigApp", "onCreate: SLEEP_GOVERNOR_ENABLED=" + enabled);

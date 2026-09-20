@@ -220,6 +220,62 @@ removed via root. `File.delete()` failed silently on that for a long time, which
 left the marker behind permanently and made it useless as a "a clamp is applied"
 flag.
 
+### 📖 Screen-state durability
+
+The sleep clamp is applied by a dynamically registered receiver, and
+`ACTION_SCREEN_ON`/`OFF` can only be received that way — they carry
+`FLAG_RECEIVER_REGISTERED_ONLY`, so a manifest receiver cannot take the job over.
+That makes the clamp depend on the process staying alive, and it does not.
+
+This is not theoretical. Reproduced on device: clamp applied while asleep, `kill -9`
+the process, press the power button — the screen comes on and `cpu4` is still
+offline with `scaling_max_freq` still 900000. A screen-on device stuck at
+400–900 MHz with half its cores dead. Launching the app did not fix it either; only
+toggling the screen again or rebooting would.
+
+Two mechanisms now guarantee the repair:
+
+* **Reconcile on every process start.** `HiBigApp.onCreate` runs for *any* process
+  start, including receiver-only ones, so the boot, power and alarm entry points are
+  all covered by one call. If the screen is on and the marker says a clamp is
+  applied, the user's profile is restored and the marker cleared. With no marker
+  this is a single file stat and returns, so a normal launch costs no root shell.
+* **A non-wakeup watchdog alarm**, armed at screen-off and re-armed while the screen
+  stays off, in `SleepWatchdogReceiver`. A `PendingIntent` lives in the system's
+  alarm queue, so it survives the process being killed and restarts it to be
+  delivered. It uses `ELAPSED_REALTIME`, **not** `..._WAKEUP`: a wakeup alarm would
+  hold the SoC out of suspend to ask a question whose answer only matters once the
+  device is awake. An elapsed-realtime alarm never wakes the device and is delivered
+  when it next wakes — exactly when the answer changes. Verified: the framework
+  registers it as `type=ELAPSED`, and an overdue one is delivered about two seconds
+  after the power key.
+
+Measured results (kill the process while clamped, then wake):
+
+| Path | Outcome |
+|---|---|
+| Without the fix | stays clamped indefinitely |
+| Cold start while the screen is on (any trigger) | repaired |
+| Overdue watchdog delivered on wake | repaired **2 s** after the power key |
+| Normal screen off→on with the process alive | unchanged, immediate |
+
+Residual window: at most one watchdog interval (90 s), and only when the process was
+killed *and* the screen comes back on before that interval expires *and* nothing
+starts the app. If the alarm has already expired it is delivered on wake, so a phone
+woken after a long sleep is repaired immediately rather than after 90 s.
+
+The interval is a deliberate trade-off: a shorter one narrows the residual window
+but polls more often while asleep. The polling is cheap — non-wakeup, and Android
+rate-limits exact alarms during Doze, so it settles to the idle quota in deep sleep.
+
+`GovernorReconciler` owns the marker file and the repair, so the semantics for "is a
+clamp applied" and "how is it lifted" live in one place instead of being spread
+across whichever receivers happen to touch it.
+
+> Note: **whether the sleep clamp earns its keep is still unmeasured.** If it turns
+> out not to save battery, the honest fix is to delete the feature rather than
+> harden it — see `docs/DURABILITY_ANALYSIS.md`.
+
 ### 🛡️ Boot-loop guard
 
 A rule that loops the device is the worst failure this app can produce, and the

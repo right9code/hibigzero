@@ -186,7 +186,66 @@ One overnight measurement decides between all four options. Phone unplugged,
 3. **Option B** is the fallback only if root scripting is unavailable.
 4. **Option A** is rejected.
 
-**Current status:** measurement not yet run (requires the phone unplugged and
-`adb` disconnected). No code changes made on the basis of this analysis.
+---
+
+## 6. Decision taken (2026-09-20)
+
+Option A was rejected on evidence. The failure was **reproduced on the device**,
+not merely theorised:
+
+```sh
+# clamp applied, screen off, process alive
+cpu4=0  marker=/data/local/tmp/hibreak_active_gov.txt=schedutil_efficient
+su -c 'kill -9 $(pidof com.right9code.hibigzero)'
+input keyevent 26                      # wake the screen
+-> screen=Awake, cpu4=0, policy0 scaling_max_freq=900000, marker PRESENT
+```
+
+A screen-on device left at 400–900 MHz with four cores offlined. Launching the app
+did not repair it either (nothing reconciled on start), so only a further screen
+toggle or a reboot would clear it. That makes the window reachable in practice, not
+a corner case — this app's own APK installs were already the only kills in the
+`am_kill` history.
+
+A hybrid, chosen because each tier alone leaves an obvious hole:
+
+| Tier | Mechanism | Covers |
+|---|---|---|
+| 1 | dynamic receiver, unchanged | the normal case, sub-second |
+| 2 | reconcile in `HiBigApp.onCreate` (`GovernorReconciler`) | any process start: boot, power events, alarms, app launch |
+| 3 | `SleepWatchdogReceiver`, non-wakeup `ELAPSED_REALTIME` alarm armed at screen-off, re-armed while off | the user simply unlocks and nothing starts the app |
+
+Tier 3 is the key insight and it works better than the alarm analysis above
+suggested. A `PendingIntent` lives in the system alarm queue, so it survives a
+process kill and restarts the process to be delivered. Because it is
+`ELAPSED_REALTIME` and **not** `..._WAKEUP`, an alarm that expired during suspend is
+delivered as soon as the device wakes, and it never holds the SoC out of suspend to
+ask a question whose answer only matters once awake. Measured: the framework
+registers it as `type=ELAPSED`, and an overdue one is delivered **~2 s after the
+power key**.
+
+Measured outcomes:
+
+| Path | Result |
+|---|---|
+| without the fix | clamped indefinitely |
+| cold start while screen on | repaired |
+| overdue watchdog delivered on wake | repaired in **2 s** |
+| normal off→on, process alive | unchanged, immediate |
+| `cancelWatchdog` on screen-on | verified: 0 live watchdog alarms remain |
+
+Residual window: **≤ 90 s**, and only when the process was killed *and* the screen
+returns before that interval expires *and* nothing starts the app. A phone woken
+after a longer sleep is repaired immediately, because its alarm is already overdue.
+
+Options B (foreground service) and D (root daemon) were **not** needed and were not
+built: `docs/PROMPT_DURABILITY.md` records the question put to a higher model, whose
+kernel reasoning on suspend current matched the outcome, but whose design no longer
+was required once tier 3 proved out.
+
+**Still open:** whether the clamp earns its keep at all (Option C, the race-to-sleep
+concern). That answer is unchanged and still needs the overnight A/B — if the clamp
+does not measurably help, the right fix is to delete the feature rather than keep
+this recovery machinery.
 
 

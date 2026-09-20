@@ -51,6 +51,14 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".SleepWatchdogReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.right9code.hibigzero.SLEEP_WATCHDOG" />
+            </intent-filter>
+        </receiver>
+
         <!-- Charger attach/detach and the charge-ceiling poll. Both power actions are
              on the implicit-broadcast exemption list, so they still arrive after the
              process is killed - attaching a charger must resume charging even then. -->

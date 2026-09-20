@@ -11,19 +11,12 @@ import java.io.FileReader;
 import java.util.Properties;
 
 public class ScreenReceiver extends BroadcastReceiver {
-    /** Shared with BootReceiver: after a boot the configured profile is applied, so
-     *  a marker left over from before the reboot no longer describes reality. */
-    public static final String ACTIVE_GOV_FILE = "/data/local/tmp/hibreak_active_gov.txt";
+    /** Kept as an alias so existing callers keep compiling; the marker is owned by
+     *  GovernorReconciler, which also holds the semantics for clearing it. */
+    public static final String ACTIVE_GOV_FILE = GovernorReconciler.ACTIVE_GOV_FILE;
 
-    /**
-     * Deletes the active-governor marker. Via root, not File.delete():
-     * /data/local/tmp is 0771 owned by shell, so this app has no write permission
-     * on the directory and unlinking there fails even for a file it owns. That
-     * silent failure once left the marker behind permanently, which made it
-     * useless as a "a clamp is currently applied" flag.
-     */
     public static void clearActiveGovMarker() {
-        ShellUtils.execRoot("rm -f " + ACTIVE_GOV_FILE, false);
+        GovernorReconciler.clearActiveGovMarker();
     }
 
     @Override
@@ -51,12 +44,16 @@ public class ScreenReceiver extends BroadcastReceiver {
                         String currentGov = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
                         String sleepGov = cfg.getProperty("SLEEP_GOVERNOR", "deep_sleep");
                         Log.i("ScreenReceiver", "Screen OFF: currentGov=" + currentGov + " sleepGov=" + sleepGov);
-                        saveActiveGov(currentGov);
+                        GovernorReconciler.saveActiveGovMarker(currentGov);
                         // Allow PowerHAL display transition to complete before clamping PPM
                         try { Thread.sleep(250); } catch (InterruptedException ignored) {}
                         String cmd = ConfigManager.buildGovernorCmd(sleepGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
                         ShellUtils.execRootAction(cmd);
+                        // Arm the repair before anything else can kill this process:
+                        // from here on the clamp exists, and this alarm is what gets it
+                        // lifted if this receiver never runs again.
+                        SleepWatchdogReceiver.scheduleWatchdog(context);
                         Log.i("ScreenReceiver", "Sleep governor applied via PPM hard_userlimit");
                         // Force-stop Gboard on screen-off to kill WorkManager wakelocks
                         if ("1".equals(cfg.getProperty("LOCKDOWN_GBOARD"))) {
@@ -75,8 +72,9 @@ public class ScreenReceiver extends BroadcastReceiver {
                         // Cancel shutdown alarm — user is active
                         ShutdownAlarmReceiver.cancelAlarm(context);
                         ShutdownAlarmReceiver.clearScreenOff(context);
+                        SleepWatchdogReceiver.cancelWatchdog(context);
                         Log.i("ScreenReceiver", "Shutdown alarm cancelled (screen on)");
-                        String savedGov = readActiveGov();
+                        String savedGov = GovernorReconciler.readActiveGovMarker();
                         if (savedGov == null || savedGov.trim().isEmpty()) {
                             savedGov = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
                         }
@@ -84,7 +82,7 @@ public class ScreenReceiver extends BroadcastReceiver {
                         String cmd = ConfigManager.buildGovernorCmd(savedGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
                         ShellUtils.execRootAction(cmd);
-                        clearActiveGovMarker();
+                        GovernorReconciler.clearActiveGovMarker();
                         Log.i("ScreenReceiver", "Wake governor restored");
                     }
                 } catch (Exception e) {
@@ -100,28 +98,4 @@ public class ScreenReceiver extends BroadcastReceiver {
         }).start();
     }
 
-    private void saveActiveGov(String profile) {
-        // /data/local/tmp is not writable by the app UID, so this is written via root
-        // and then handed to our own uid with 0600 (ConfigManager.secureFileTail) so
-        // readActiveGov(), running as the app, can still read it back.
-        if (!ConfigManager.isValidGovernorProfile(profile)) {
-            ShellUtils.appendLog("saveActiveGov: refusing invalid governor profile: " + profile);
-            return;
-        }
-        ShellUtils.execRoot("printf '%s' '" + profile + "' > " + ACTIVE_GOV_FILE +
-            ConfigManager.secureFileTail(ACTIVE_GOV_FILE), false);
     }
-
-    private String readActiveGov() {
-        File file = new File(ACTIVE_GOV_FILE);
-        if (!file.exists()) return null;
-        try {
-            BufferedReader br = new BufferedReader(new FileReader(file));
-            String line = br.readLine();
-            br.close();
-            return line != null ? line.trim() : null;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-}

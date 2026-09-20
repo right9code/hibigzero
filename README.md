@@ -99,7 +99,7 @@ Tap the **UPDATE** button in the header to check for new releases of HiBig Zero 
 ### 4. 📦 Granular Package Freezer & Standby Bucket Manager (Tab 2)
 * Live queried package inspector with an E-ink friendly **`OPTIONS ▾`** dropdown menu per app.
 * **Freeze / Unfreeze:** Disables bloatware via `pm disable-user --user 0`.
-* **AppOps Restrict:** Blocks background wakelocks, alarm wakeups, and background execution.
+* **AppOps Restrict:** Blocks background wakelocks, background execution and foreground-service starts (`WAKE_LOCK`, `RUN_IN_BACKGROUND`, `RUN_ANY_IN_BACKGROUND`, `START_FOREGROUND`), drops the app from the Doze whitelist and pins it to the `RESTRICTED` standby bucket. Network access is *not* touched: no appop exists for it.
 * **Standby Bucket Selector:** Seamlessly assigns apps to `ACTIVE (10)`, `WORKING_SET (20)`, `FREQUENT (30)`, `RARE (40)`, or `RESTRICTED (45)`.
 * **Doze Exemption Toggle:** Live control over Android Doze whitelist (`dumpsys deviceidle whitelist`).
 

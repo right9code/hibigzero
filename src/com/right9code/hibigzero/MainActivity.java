@@ -48,6 +48,11 @@ public class MainActivity extends Activity {
     private boolean logDrawerVisible = false;
     private TextView logDrawerView = null;   // live log view, hosted in the banner popup
     private AlertDialog logDialog = null;    // currently-open log popup (if any)
+
+    // Last self-protection probe result (uid|bgOp|dozeExempt|processLimit) + its
+    // timestamp. Probed once on launch and on demand — never on a timer.
+    private volatile String selfProtectRaw = null;
+    private TextView protectStatusView = null;
     private Button tabSysBtn, tabAppsBtn, tabDiagBtn;
     private View tabSysIndicator, tabAppsIndicator, tabDiagIndicator;
 
@@ -114,13 +119,24 @@ public class MainActivity extends Activity {
         currentConfig = ConfigManager.loadConfig();
         if (getIntent() != null) activeTab = getIntent().getIntExtra("tab", 0);
 
-        // Ensure log file is writable
+        // Ensure log file is writable + re-assert our own background rights.
         new Thread(new Runnable() {
             @Override
             public void run() {
                 ShellUtils.execRoot("touch " + ShellUtils.LOG_PATH + " && chmod 666 " + ShellUtils.LOG_PATH + " 2>/dev/null");
                 ShellUtils.execRoot("appops set com.right9code.hibigzero SYSTEM_ALERT_WINDOW allow 2>/dev/null; " +
                     "pm grant com.right9code.hibigzero android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null");
+                // One-shot self-protection probe (repairs too, if needed) so the
+                // PROTECTION card can show a real state without polling.
+                selfProtectRaw = ShellUtils.execRoot(ConfigManager.buildSelfCheckAndFixCmd(), false).stdout.trim();
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (protectStatusView != null) {
+                            protectStatusView.setText(formatSelfStatus(selfProtectRaw));
+                        }
+                    }
+                });
                 ShellUtils.appendLog("HiBreak Manager v2.0 launched (right9code)");
             }
         }).start();
@@ -141,7 +157,7 @@ public class MainActivity extends Activity {
         headerTop.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView title = new TextView(this);
-        title.setText("HiBiG ZERO  v1.3.2");
+        title.setText("HiBiG ZERO  v" + ConfigManager.getAppVersion(this));
         setSp(title, 15);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setTextColor(Color.WHITE);
@@ -430,7 +446,14 @@ public class MainActivity extends Activity {
         logDrawerView.setText("(log appears after first toggle)");
         final TextView logDrawer = logDrawerView;
 
-        // ── Section: HARDWARE ──────────────────────────────────────────────
+        // ─ Section: PROTECTION (self) ─────────────────────────────────────
+        // The manager cannot enforce anything if Android reaps it minutes after
+        // screen-off, so its own background rights are checked here and repaired
+        // on demand. Probed once at launch — deliberately not on a timer.
+        addSectionHeader("PROTECTION", "The manager must never restrict itself");
+        addProtectionCard(logDrawer);
+
+        // ─ Section: HARDWARE ──────────────────────────────────────────────
         addSectionHeader("HARDWARE");
 
         // Pre-build pm command strings
@@ -467,13 +490,6 @@ public class MainActivity extends Activity {
             "settings get global window_animation_scale",
             logDrawer);
 
-        addToggle("NO_BACKGROUNDS", "NO_BACKGROUNDS",
-            "Kill all background processes (Developer Options limit 0)",
-            false,
-            "settings put global background_process_limit 0 2>/dev/null",
-            "settings put global background_process_limit -1 2>/dev/null",
-            "settings get global background_process_limit",
-            logDrawer);
 
 
         // ── CAPACITIVE_KEYS: Freeze/Unfreeze ebook.launcher for side-button config ──
@@ -839,11 +855,11 @@ public class MainActivity extends Activity {
             logDrawer);
 
         addToggle("AGGRESSIVE_DOZE", "AGGRESSIVE_DOZE",
-            "Deep idle within 5s of display off",
+            "Enter doze quickly: light idle after 5 min, deep idle after 30 min",
             false,
-            "dumpsys deviceidle enable 2>/dev/null; device_config put device_idle quick_doze_delay_to 5000 2>/dev/null; device_config put device_idle inactive_to 5000 2>/dev/null; device_config put device_idle sensing_to 0 2>/dev/null; device_config put device_idle locating_to 0 2>/dev/null; device_config put device_idle motion_inactive_to 0 2>/dev/null; device_config put device_idle idle_to 86400000 2>/dev/null; device_config put device_idle max_idle_to 86400000 2>/dev/null",
-            "dumpsys deviceidle disable 2>/dev/null",
-            "dumpsys deviceidle 2>/dev/null | grep -i 'mEnabled' | head -1",
+            ConfigManager.getAggressiveDozeCmd(true),
+            ConfigManager.getAggressiveDozeCmd(false),
+            "dumpsys deviceidle 2>/dev/null | grep -oE 'mDeepEnabled=[a-z]+' | head -1",
             logDrawer);
 
         addToggle("BATTERY_85", "BATTERY_CAP_85",
@@ -855,7 +871,8 @@ public class MainActivity extends Activity {
             logDrawer);
 
         addToggle("AUTO_SHUTDOWN", "AUTO_SHUTDOWN_ENABLED",
-            "Clean reboot -p after inactivity (E-ink retains at 0 mA)",
+            "Clean reboot -p after inactivity (E-ink retains at 0 mA). Enabling this "
+                + "also disables Bigme's own power-off timer so the two cannot compete.",
             false,
             "", "", "",
             logDrawer,
@@ -863,9 +880,24 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if ("1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "1"))) {
+                        // Our timer is the single authority for power-off: Bigme's own
+                        // PowersaveShutDownAlarmReceiver must not race it (it is also a
+                        // wakeup source). Written to config so boot re-asserts it.
+                        if (!"1".equals(currentConfig.getProperty("KILL_SHUTDOWN_ALARM", "0"))) {
+                            currentConfig.setProperty("KILL_SHUTDOWN_ALARM", "1");
+                            ConfigManager.saveConfig(currentConfig);
+                            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
+                            ShellUtils.appendLog("Auto-shutdown ON -> Bigme's own timer disabled");
+                        }
                         ShutdownAlarmReceiver.scheduleAlarmWithConfig(MainActivity.this);
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() { renderCurrentTab(); }
+                        });
                     } else {
                         ShutdownAlarmReceiver.cancelAlarm(MainActivity.this);
+                        ShellUtils.appendLog("Auto-shutdown OFF -> Bigme's timer left disabled "
+                            + "(turn KILL_SHUTDOWN off to restore it)");
                     }
                 }
             });
@@ -949,6 +981,20 @@ public class MainActivity extends Activity {
         timeoutRow.addView(changeTimer);
         addSectionContent(timeoutRow);
 
+        addToggle("SKIP_WHILE_CHARGING", "AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
+            "Do not power off while a charger is attached (reschedules instead)",
+            false,
+            "", "",
+            ConfigManager.getConfigProbeCmd("AUTO_SHUTDOWN_SKIP_WHEN_CHARGING", "SKIPPING", "ALLOWED"),
+            logDrawer);
+
+        addToggle("SHUTDOWN_TEST_MODE", "AUTO_SHUTDOWN_DRY_RUN",
+            "Log the shutdown decision instead of performing it (safe testing)",
+            false,
+            "", "",
+            ConfigManager.getConfigProbeCmd("AUTO_SHUTDOWN_DRY_RUN", "TEST-ONLY", "LIVE"),
+            logDrawer);
+
         // ── Section: SUSPEND (Optimization #3) ─────────────────────────────
         addSectionHeader("SUSPEND",
             "Reduce suspend failures by blocking alarm wakeups during freeze");
@@ -958,7 +1004,7 @@ public class MainActivity extends Activity {
             false,
             ConfigManager.getKillShutdownAlarmCmd(true),
             ConfigManager.getKillShutdownAlarmCmd(false),
-            "[ -f /data/system/ifw/block_bigme_shutdown.xml ] && echo BLOCKED || echo ACTIVE",
+            ConfigManager.getBigmeShutdownProbeCmd(),
             logDrawer);
 
         addToggle("JS_IDLE", "SUPPRESS_JS_IDLE",
@@ -1036,6 +1082,113 @@ public class MainActivity extends Activity {
 
         // ── APPLY ALL (pinned to the very bottom of the SYSTEM tab) ──────
         addSectionContent(applyBtn);
+    }
+
+    // ── PROTECTION card: check + self-repair, battery-first ────────────────
+    // One root spawn per check. No timers, no polling: the probe runs once at
+    // launch and when the user taps [CHECK & FIX].
+    private void addProtectionCard(final TextView logDrawer) {
+        final LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        protectStatusView = new TextView(this);
+        setSp(protectStatusView, 11);
+        protectStatusView.setTypeface(Typeface.DEFAULT);
+        protectStatusView.setTextColor(Color.BLACK);
+        protectStatusView.setText(selfProtectRaw == null
+            ? "Checking on launch..." : formatSelfStatus(selfProtectRaw));
+        card.addView(protectStatusView);
+
+        final Button checkBtn = new Button(this);
+        checkBtn.setText("[CHECK & FIX]");
+        setSp(checkBtn, 11);
+        checkBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        checkBtn.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
+        styleEinkButton(checkBtn, true);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = dpToPx(8);
+        checkBtn.setLayoutParams(blp);
+        checkBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                checkBtn.setEnabled(false);
+                checkBtn.setText("CHECKING...");
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        // Single root spawn: probes, repairs if needed, and reports
+                        // the state it found before repairing.
+                        final String res = ShellUtils.execRoot(
+                            ConfigManager.buildSelfCheckAndFixCmd(), false).stdout.trim();
+                        selfProtectRaw = res;
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (protectStatusView != null) protectStatusView.setText(formatSelfStatus(res));
+                                checkBtn.setEnabled(true);
+                                checkBtn.setText("[CHECK & FIX]");
+                                if (logDrawer != null) logDrawer.setText(ShellUtils.readLog(15));
+                            }
+                        });
+                    }
+                }).start();
+            }
+        });
+        card.addView(checkBtn);
+
+        TextView note = new TextView(this);
+        note.setText("Checked once at launch, and only when you tap. No background polling.");
+        setSp(note, 9);
+        note.setTypeface(Typeface.DEFAULT);
+        note.setTextColor(Color.BLACK);
+        note.setPadding(0, dpToPx(6), 0, 0);
+        card.addView(note);
+
+        addSectionContent(card);
+    }
+
+    /** Render a probe result: uid|background_op|doze_exempt_count|process_limit */
+    private String formatSelfStatus(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return "SELF-PROTECTION\nno probe result — is root granted?";
+        }
+        String[] p = raw.trim().split("\\|", -1);
+        if (p.length < 4) return "SELF-PROTECTION\nunreadable probe result";
+        // `id -u` prints 0 for root: uid 0 IS the success case here.
+        boolean rootOk = "0".equals(p[0].trim());
+        String  uid    = p[0].trim();
+        boolean bgOk   = ConfigManager.isBgOpAllowed(p[1]);
+        boolean dozeOk = p[2].trim().startsWith("1") || p[2].trim().startsWith("2");
+        String limit   = p[3].trim();
+
+        StringBuilder sb = new StringBuilder("SELF-PROTECTION\n");
+        sb.append("root        : ").append(rootOk ? "granted (uid 0)" : "NOT granted (uid " + uid + ") - grant root in Magisk").append("\n");
+        sb.append("background  : ").append(bgOk ? "allowed (OK)" : "was BLOCKED - repaired").append("\n");
+        sb.append("doze exempt : ").append(dozeOk ? "yes (OK)" : "was missing - repaired").append("\n");
+        sb.append("cached cap  : ");
+        if ("-1".equals(limit))        sb.append("no limit (OK)");
+        else if ("0".equals(limit))    sb.append("was 0 - repaired to no limit");
+        else if (limit.isEmpty())      sb.append("unknown");
+        else                           sb.append(limit).append(" (set by you)");
+        return sb.toString();
+    }
+
+    /** The manager's own rules must never restrict the manager itself. */
+    private boolean isSelfProtected(String pkg) {
+        if (ConfigManager.SELF_PKG.equals(pkg)) {
+            Toast.makeText(MainActivity.this,
+                "HiBig Zero must stay unrestricted - that is what keeps your sleep timer and CPU profiles alive",
+                Toast.LENGTH_LONG).show();
+            return true;
+        }
+        return false;
     }
 
     /** Open the live system log as a popup from the banner. */
@@ -2598,6 +2751,7 @@ public class MainActivity extends Activity {
                 break;
 
             case 1: // Restrict AppOps
+                if (isSelfProtected(pkg)) break;
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
@@ -2623,10 +2777,12 @@ public class MainActivity extends Activity {
                 break;
 
             case 2: // Set Standby Bucket
+                if (isSelfProtected(pkg)) break;
                 showStandbyBucketPicker(item, pm, protected_pkgs, listContainer);
                 break;
 
             case 3: // Toggle Doze Exemption
+                if (isSelfProtected(pkg)) break;
                 new Thread(new Runnable() {
                     @Override
                     public void run() {

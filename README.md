@@ -107,10 +107,12 @@ Tap the **UPDATE** button in the header to check for new releases of HiBig Zero 
 * Purges the Android 14 `JobScheduler` queue of all Google Superpacks dictionary and telemetry sync jobs.
 * Enforces `RUN_ANY_IN_BACKGROUND ignore` and `START_FOREGROUND ignore` without affecting normal foreground typing or offline autocorrect.
 
-### 6. ⏱️ Inactivity Auto-Shutdown Daemon
-* Bundled background daemon running in `/data/local/tmp/auto_shutdown.sh`.
-* Accurately tracks screen state using Android 14 `mWakefulness=Awake` (preventing false shutdowns while reading static pages).
-* Configurable timeout presets (`60m`, `120m`, `240m`, `480m`) or custom manual inputs. Shuts down cleanly (`reboot -p`) to retain the current E-ink image at **0.00 mA** power draw.
+### 6. ⏱️ Inactivity Auto-Shutdown (AlarmManager, no daemon)
+* A single `AlarmManager` alarm (`setExactAndAllowWhileIdle`) is armed on screen-off and cancelled on screen-on. No shell daemon, no polling, no wakeups — the timeout costs **0 mA** until it fires, then powers off with `reboot -p` to retain the current E-ink image.
+* Configurable timeout presets (`60m`, `120m`, `240m`, `480m`) or a custom value.
+* **Charging guard:** a plugged-in device is rescheduled instead of powered off (nothing is saved by powering off a charger). Toggle `SKIP_WHILE_CHARGING`.
+* **Safety net:** when the alarm fires the receiver re-checks `PowerManager.isInteractive()` and a monotonic screen-off stamp, so a killed process or a stale alarm can never power the device off mid-use. Any error reschedules — it never fails open into a shutdown.
+* **Single authority:** enabling this also disables Bigme’s own `PowersaveShutDownAlarmReceiver` (re-asserted every boot), so two power-off timers can never compete. `SHUTDOWN_TEST_MODE` logs the decision instead of performing it.
 
 ### 7. 📊 Live Power & Hardware Monitor (Tab 3)
 * Real-time 3-second hardware polling:
@@ -203,7 +205,28 @@ The repository includes a zero-dependency build script that compiles Java 8 sour
 ```sh
 python3 build.py
 ```
-The compiled, aligned, and signed APK will be generated under `releases/HiBigZero-v1.3.0-release.apk` along with its SHA-256 checksum file.
+The compiled, aligned, and signed APK is generated under `releases/` together with its SHA-256 checksum file.
+
+### Signing key (read this before releasing)
+The build is signed with a key kept **outside this repository** (the repo is public, so a signing key must never be committed):
+
+```
+~/.config/hibigzero/hibigzero-release.jks      # the key itself (chmod 600)
+~/.config/hibigzero/keystore.properties        # storeFile / storePassword / keyAlias / keyPassword
+```
+
+Override with `HIBIGZERO_KEYSTORE`, `HIBIGZERO_KEYSTORE_PROPS`, `HIBIGZERO_STOREPASS` if you keep them elsewhere.
+
+**All releases must be signed with the same certificate.** Android refuses to update an app whose signature changed (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`), so a new key orphans every existing installation - users can only recover by uninstalling and reinstalling.
+
+`build.py` therefore:
+* **refuses to build** if the keystore is missing (it will never silently mint a new identity),
+* prints and verifies the certificate fingerprint on every build,
+* prints a loud warning if the identity differs from the expected `c378f6f7...`.
+
+To deliberately start a brand new identity: `python3 build.py --init-key` (then tell your users they must reinstall once).
+
+> **History:** builds up to v1.3.3 were signed with a key stored in `/tmp`, which was lost when `/tmp` was cleared (cert `2238ad46...`). v1.3.4 onward uses the persistent key above. Installations of v1.3.3 or older must be uninstalled once before they can be updated.
 
 ---
 

@@ -51,6 +51,9 @@ public class ScreenReceiver extends BroadcastReceiver {
                             Log.i("ScreenReceiver", "Gboard force-stopped on screen-off");
                         }
                         // Schedule auto-shutdown alarm (zero-drain, AlarmManager-based)
+                        // Monotonic stamp so the alarm can verify real idle time
+                        // even after a process restart.
+                        ShutdownAlarmReceiver.markScreenOff(context);
                         if ("1".equals(cfg.getProperty("AUTO_SHUTDOWN_ENABLED"))) {
                             ShutdownAlarmReceiver.scheduleAlarmWithConfig(context);
                             Log.i("ScreenReceiver", "Shutdown alarm scheduled");
@@ -58,6 +61,7 @@ public class ScreenReceiver extends BroadcastReceiver {
                     } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                         // Cancel shutdown alarm — user is active
                         ShutdownAlarmReceiver.cancelAlarm(context);
+                        ShutdownAlarmReceiver.clearScreenOff(context);
                         Log.i("ScreenReceiver", "Shutdown alarm cancelled (screen on)");
                         String savedGov = readActiveGov();
                         if (savedGov == null || savedGov.trim().isEmpty()) {

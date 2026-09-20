@@ -19,9 +19,9 @@ public class ConfigManager {
         "LOCKDOWN_GBOARD","AGGRESSIVE_DOZE","SUPPRESS_ALARMS","KERNEL_SENSOR",
         "BATTERY_CAP_85","GOVERNOR_PROFILE","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
         "SLEEP_GOVERNOR","SLEEP_GOVERNOR_ENABLED",
-        "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","DISABLE_ANIMATIONS",
+        "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
+        "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
         "KILL_SHUTDOWN_ALARM","SUPPRESS_JS_IDLE","WIDE_ALARM_FUZZ","INSTANT_LOCK",
-        "NO_BACKGROUNDS",
         "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL"
     };
 
@@ -445,12 +445,15 @@ public class ConfigManager {
         p.setProperty("SLEEP_GOVERNOR_ENABLED", "0");
         p.setProperty("AUTO_SHUTDOWN_ENABLED", "0");
         p.setProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120");
+        // Powering off a charging device saves nothing, so skip it by default.
+        p.setProperty("AUTO_SHUTDOWN_SKIP_WHEN_CHARGING", "1");
+        // "1" logs the shutdown decision instead of performing it (safe testing).
+        p.setProperty("AUTO_SHUTDOWN_DRY_RUN", "0");
         p.setProperty("DISABLE_ANIMATIONS", "0");
         p.setProperty("KILL_SHUTDOWN_ALARM", "0");
         p.setProperty("SUPPRESS_JS_IDLE", "0");
         p.setProperty("WIDE_ALARM_FUZZ", "0");
         p.setProperty("INSTANT_LOCK", "0");
-        p.setProperty("NO_BACKGROUNDS", "0");
         return p;
     }
 
@@ -557,6 +560,55 @@ public class ConfigManager {
             "am set-standby-bucket " + pkg + " active 2>/dev/null";
     }
 
+    // ── Self-protection ───────────────────────────────────────────────────
+    // Android reaps a background-restricted app a few minutes after screen-off
+    // ("Killing ...: cached idle & background restricted"), taking the sleep
+    // governor restore, the auto-shutdown alarm and the boot rules with it.
+    // These three rights are therefore re-asserted at launch, at boot, and from
+    // the PROTECTION card's [CHECK & FIX] button — one root spawn each time.
+
+    public static final String SELF_PKG = "com.right9code.hibigzero";
+
+    /**
+     * Read-only status probe; fields are pipe-separated:
+     * uid|background_op|doze_exempt_count|process_limit
+     */
+    public static String buildSelfStatusCmd() {
+        return "echo \"$(id -u)|" +
+            "$(cmd appops get " + SELF_PKG + " RUN_ANY_IN_BACKGROUND 2>/dev/null | head -1)|" +
+            "$(dumpsys deviceidle whitelist 2>/dev/null | grep -c " + SELF_PKG + ")|" +
+            "$(settings get global background_process_limit 2>/dev/null)\"";
+    }
+
+    /**
+     * Repair this package's own background rights, and echo the state found
+     * BEFORE the repair (same field order as buildSelfStatusCmd) so the UI can
+     * report what was wrong. Idempotent, one root spawn, safe on every launch.
+     */
+    public static String buildSelfCheckAndFixCmd() {
+        return "A=$(cmd appops get " + SELF_PKG + " RUN_ANY_IN_BACKGROUND 2>/dev/null | head -1); " +
+            "D=$(dumpsys deviceidle whitelist 2>/dev/null | grep -c " + SELF_PKG + "); " +
+            "P=$(settings get global background_process_limit 2>/dev/null); " +
+            "cmd appops set " + SELF_PKG + " RUN_ANY_IN_BACKGROUND allow 2>/dev/null; " +
+            "dumpsys deviceidle whitelist +" + SELF_PKG + " >/dev/null 2>&1; " +
+            "[ \"$P\" = \"0\" ] && settings put global background_process_limit -1 2>/dev/null; " +
+            "echo \"$(id -u)|$A|$D|$P\"";
+    }
+
+    /**
+     * true when the appops read-back shows no active restriction.
+     * Android prints "No operations.\nDefault mode: allow" when nothing is
+     * overridden, and "RUN_ANY_IN_BACKGROUND: ignore" when it is restricted —
+     * so the reliable signal is the presence of "ignore", not the presence of
+     * "allow".
+     */
+    public static boolean isBgOpAllowed(String opLine) {
+        if (opLine == null) return true;
+        String s = opLine.trim();
+        if (s.isEmpty()) return true;
+        return !s.contains("ignore");
+    }
+
     public static String buildSetStandbyBucketCmd(String pkg, String bucket) {
         return "am set-standby-bucket " + pkg + " " + bucket + " 2>/dev/null";
     }
@@ -596,6 +648,38 @@ public class ConfigManager {
         }
     }
 
+    /**
+     * Our own versionName, straight from PackageManager. Never hardcode the
+     * version in the UI again - that is how the banner drifted out of sync.
+     */
+    public static String getAppVersion(android.content.Context ctx) {
+        try {
+            if (ctx != null) {
+                return ctx.getPackageManager()
+                    .getPackageInfo(ctx.getPackageName(), 0).versionName;
+            }
+        } catch (Exception ignored) {}
+        return "0.0.0";
+    }
+
+    /**
+     * Real probe for Bigme's own power-off receiver. The previous test only
+     * checked that the IntentFirewall XML existed, but this firmware loads 0
+     * rules from that file, so its presence proves nothing. The component's
+     * disabled state is the only trustworthy signal.
+     */
+    public static String getBigmeShutdownProbeCmd() {
+        return "dumpsys package com.android.settings 2>/dev/null | " +
+            "sed -n '/disabledComponents:/,/enabledComponents:/p' | " +
+            "grep -q PowersaveShutDownAlarmReceiver && echo DISABLED || echo ACTIVE";
+    }
+
+    /** Reads a boolean config key straight from the on-disk config file. */
+    public static String getConfigProbeCmd(String key, String onToken, String offToken) {
+        return "grep -q '^" + key + "=1' " + CONF_PATH + " 2>/dev/null && echo " +
+            onToken + " || echo " + offToken;
+    }
+
     public static String getSuppressJsIdleCmd(boolean enable) {
         if (enable) {
             return "cmd jobscheduler cancel-all cn.wps.moffice_eng 2>/dev/null; " +
@@ -630,6 +714,33 @@ public class ConfigManager {
         } else {
             return "settings put secure lock_screen_lock_after_timeout 5000 2>/dev/null";
         }
+    }
+
+    // ── Aggressive Doze ───────────────────────────────────────────────────
+    // ON  = shorten the path into doze, but keep deep idle reachable.
+    // OFF = RESTORE normal doze (enable) and drop our overrides. The old OFF
+    //       branch ran `dumpsys deviceidle disable`, which switched doze off
+    //       entirely and left the aggressive constants behind — the worst of
+    //       both worlds (0 min deep doze measured on device, `idle_to=24h`).
+    public static String getAggressiveDozeCmd(boolean enable) {
+        final String KEYS = "quick_doze_delay_to inactive_to sensing_to locating_to " +
+            "motion_inactive_to idle_to max_idle_to min_time_to_alarm";
+        if (enable) {
+            return "dumpsys deviceidle enable 2>/dev/null; " +
+                "device_config put device_idle quick_doze_delay_to 5000 2>/dev/null; " +
+                "device_config put device_idle inactive_to 300000 2>/dev/null; " +
+                "device_config put device_idle sensing_to 60000 2>/dev/null; " +
+                "device_config put device_idle locating_to 60000 2>/dev/null; " +
+                "device_config put device_idle motion_inactive_to 60000 2>/dev/null; " +
+                "device_config put device_idle idle_to 1800000 2>/dev/null; " +
+                "device_config put device_idle max_idle_to 21600000 2>/dev/null; " +
+                "device_config put device_idle min_time_to_alarm 3600000 2>/dev/null";
+        }
+        StringBuilder sb = new StringBuilder("dumpsys deviceidle enable 2>/dev/null; ");
+        for (String k : KEYS.split(" ")) {
+            sb.append("device_config delete device_idle ").append(k).append(" 2>/dev/null; ");
+        }
+        return sb.toString();
     }
 
     public static String getBucketLabel(int bucket) {

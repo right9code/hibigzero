@@ -39,3 +39,8 @@ hwparam.json
 # Logs
 *.log
 /data/
+
+# Release APKs: attach these to GitHub Releases instead of committing
+# binaries (keeps the repo small; the self-updater already reads Releases).
+releases/*.apk
+releases/*.apk.idsig

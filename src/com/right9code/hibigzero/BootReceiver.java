@@ -30,6 +30,11 @@ public class BootReceiver extends BroadcastReceiver {
         ShellUtils.appendLog("=== BootReceiver: applying all rules ===");
         Properties cfg = ConfigManager.loadConfig();
 
+        // 0. Self-protection — the manager must never be background-restricted by
+        //    its own rules, or Android reaps it minutes after screen-off and every
+        //    rule applied below loses its owner. Idempotent, single root spawn.
+        ShellUtils.execRoot(ConfigManager.buildSelfCheckAndFixCmd());
+
         // 1. Fix UART - passive monitor with fallback
         if ("1".equals(cfg.getProperty("FIX_UART"))) {
             String svcStatus = ShellUtils.execRoot("getprop init.svc.uart2serport").stdout.trim();
@@ -91,18 +96,11 @@ public class BootReceiver extends BroadcastReceiver {
                 "am set-standby-bucket com.google.android.inputmethod.latin rare 2>/dev/null; " +
                 "dumpsys deviceidle whitelist -com.google.android.inputmethod.latin 2>/dev/null");
         }
-        // 7. Aggressive Doze
-        if ("1".equals(cfg.getProperty("AGGRESSIVE_DOZE"))) {
-            ShellUtils.execRoot("dumpsys deviceidle enable 2>/dev/null; " +
-                "device_config put device_idle quick_doze_delay_to 5000 2>/dev/null; " +
-                "device_config put device_idle inactive_to 5000 2>/dev/null; " +
-                "device_config put device_idle sensing_to 0 2>/dev/null; " +
-                "device_config put device_idle locating_to 0 2>/dev/null; " +
-                "device_config put device_idle motion_inactive_to 0 2>/dev/null; " +
-                "device_config put device_idle idle_to 86400000 2>/dev/null; " +
-                "device_config put device_idle max_idle_to 86400000 2>/dev/null; " +
-                "device_config put device_idle min_time_to_alarm 3600000 2>/dev/null");
-        }
+        // 7. Doze: ON shortens the entry times, OFF restores normal doze. Never
+        //    leave doze disabled — the old OFF branch did exactly that and the
+        //    device ended up with 0 min of deep idle while `idle_to` said 24 h.
+        ShellUtils.execRoot(ConfigManager.getAggressiveDozeCmd(
+            "1".equals(cfg.getProperty("AGGRESSIVE_DOZE"))));
         // 8. Suppress Alarms
         if ("1".equals(cfg.getProperty("SUPPRESS_ALARMS"))) {
             ShellUtils.execRoot("cmd appops set com.google.android.gms ALARM_WAKEUP ignore 2>/dev/null");
@@ -146,14 +144,14 @@ public class BootReceiver extends BroadcastReceiver {
                 "settings put global disable_window_blurs 1 2>/dev/null; " +
                 "setprop persist.sys.sf.disable_blurs 1 2>/dev/null");
         }
-        // 14b. No Background Processes
-        if ("1".equals(cfg.getProperty("NO_BACKGROUNDS"))) {
-            ShellUtils.execRoot("settings put global background_process_limit 0 2>/dev/null");
-        }
         // 15. Auto-shutdown alarm (zero-drain, AlarmManager-based)
         if ("1".equals(cfg.getProperty("AUTO_SHUTDOWN_ENABLED"))) {
+            // Our timer is the single authority for power-off, so Bigme's own
+            // PowersaveShutDownAlarmReceiver is re-disabled on every boot - that way
+            // an OTA or firmware reset that restores it gets corrected here.
+            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
             ShutdownAlarmReceiver.scheduleAlarmWithConfig(context);
-            ShellUtils.appendLog("auto-shutdown alarm scheduled at boot");
+            ShellUtils.appendLog("auto-shutdown armed at boot (Bigme timer disabled)");
         } else {
             ShutdownAlarmReceiver.cancelAlarm(context);
         }

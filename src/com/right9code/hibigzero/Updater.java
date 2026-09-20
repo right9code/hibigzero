@@ -192,15 +192,9 @@ public class Updater {
             }
         } catch (Exception ignored) {}
 
-        // Fallback: dumpsys package
-        try {
-            ShellUtils.CommandResult r = ShellUtils.execRoot(
-                "dumpsys package com.right9code.hibigzero 2>/dev/null | grep versionName | head -1", false);
-            if (r.stdout.contains("=")) {
-                return r.stdout.split("=")[1].trim();
-            }
-        } catch (Exception ignored) {}
-        return "1.3.0";
+        // PackageManager is the authority; "0.0.0" means "unknown" so the
+        // updater errs toward offering an update rather than silently skimping.
+        return ConfigManager.getAppVersion(context);
     }
 
     public static int compareVersions(String a, String b) {

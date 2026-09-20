@@ -68,7 +68,10 @@ public class ConfigManager {
         "com.android.phone com.android.server.telecom com.android.providers.telephony " +
         "com.android.mms com.android.printspooler com.android.bips com.android.quicksearchbox " +
         "com.android.providers.calendar com.android.localtransport " +
-        "com.android.deskclock com.android.se " +
+        // com.android.deskclock deliberately NOT frozen: it is the only alarm
+        // clock on this device, so freezing it silently kills alarms and timers.
+        // It stays available in the Debloat tab if the user wants it gone.
+        "com.android.se " +
         "com.android.calllogbackup com.android.cts.ctsshim com.android.cts.priv.ctsshim " +
         "com.android.dreams.basic com.android.emergency " +
         "com.android.pacprocessor " +

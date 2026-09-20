@@ -18,6 +18,8 @@ public class BootReceiver extends BroadcastReceiver {
                     applyAllRules(context);
                     writeBootTime();
                 } finally {
+                    // Boot is a short-lived receiver process: flush before returning.
+                    ShellUtils.flushLog();
                     result.finish();
                 }
             }

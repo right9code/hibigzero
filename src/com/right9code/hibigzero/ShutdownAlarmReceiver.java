@@ -38,6 +38,9 @@ public class ShutdownAlarmReceiver extends BroadcastReceiver {
                     ShellUtils.appendLog("ShutdownAlarm: error (" + t + ") - rescheduled, NOT shutting down");
                     try { scheduleAlarmWithConfig(appCtx); } catch (Throwable ignored) {}
                 } finally {
+                    // The process can be reaped the moment finish() returns, so force
+                    // the queued log lines to disk before handing control back.
+                    ShellUtils.flushLog();
                     pendingResult.finish();
                 }
             }

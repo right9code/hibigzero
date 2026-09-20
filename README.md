@@ -154,6 +154,22 @@ graph TD
     BootRec --> Config
 ```
 
+### 📜 Persistent log
+
+Every entry the UI shows is also appended to `/data/local/tmp/hibreak.log`
+(mode `0600`) by a single background writer thread. The writer **batches**, so a
+burst such as an `APPLY ALL RULES` pass costs one root shell rather than one per
+line. The payload is base64-encoded, so command output containing quotes,
+backslashes or dollars cannot escape into the shell. The file rotates at 256 KB,
+keeping the newest 128 KB.
+
+Unlike the in-memory list it survives the process being reaped, which is the
+point: the boot-time rule pass, charger events and the shutdown decision stay
+readable afterwards. Receivers call `ShellUtils.flushLog()` before
+`PendingResult.finish()`, because the process can be reaped the moment
+`finish()` returns. The log popup shows the persisted tail merged with anything
+not yet flushed.
+
 ## 🔓 Device Rooting Guide
 
 > [!IMPORTANT]

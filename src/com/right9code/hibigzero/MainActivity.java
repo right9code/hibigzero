@@ -139,7 +139,9 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                ShellUtils.execRoot("touch " + ShellUtils.LOG_PATH + " && chmod 666 " + ShellUtils.LOG_PATH + " 2>/dev/null");
+                // 0600, not 0666: this log records package names and root commands,
+                // and /data/local/tmp is world-traversable.
+                ShellUtils.execRoot("touch " + ShellUtils.LOG_PATH + " && chmod 600 " + ShellUtils.LOG_PATH + " 2>/dev/null", false);
                 ShellUtils.execRoot("appops set com.right9code.hibigzero SYSTEM_ALERT_WINDOW allow 2>/dev/null; " +
                     "pm grant com.right9code.hibigzero android.permission.SYSTEM_ALERT_WINDOW 2>/dev/null");
                 // One-shot self-protection probe (repairs too, if needed) so the
@@ -1340,6 +1342,29 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    /**
+     * Replaces the popup text with the persisted log, read as root on a background
+     * thread. The in-memory list is shown first so the popup opens instantly; the
+     * file version also carries entries from before this process started - the
+     * boot-time rule pass, and anything logged while the app was dead.
+     */
+    private void loadPersistedLogInto(final TextView view) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final String merged = ShellUtils.readLogMerged(200);
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (view != null && view.getVisibility() == View.VISIBLE) {
+                            view.setText(merged);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
     /** Open the live system log as a popup from the banner. */
     private void showLogPopup() {
         if (logDrawerView == null) return;
@@ -1349,6 +1374,7 @@ public class MainActivity extends Activity {
         }
         logDrawerView.setVisibility(View.VISIBLE);
         logDrawerView.setText(ShellUtils.readLog(30));
+        loadPersistedLogInto(logDrawerView);
 
         ScrollView scroller = new ScrollView(this);
         scroller.addView(logDrawerView);

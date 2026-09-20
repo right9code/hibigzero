@@ -78,6 +78,9 @@ public class ScreenReceiver extends BroadcastReceiver {
                     Log.e("ScreenReceiver", "Error: " + e.getMessage(), e);
                     ShellUtils.appendLog("ScreenReceiver error: " + e.getMessage());
                 } finally {
+                    // The process can be reaped the moment finish() returns, so force
+                    // the queued log lines to disk before handing control back.
+                    ShellUtils.flushLog();
                     pendingResult.finish();
                 }
             }

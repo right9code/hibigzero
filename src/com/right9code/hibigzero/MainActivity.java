@@ -2848,8 +2848,10 @@ public class MainActivity extends Activity {
                             public void run() {
                                 if (!targetEnabled) {
                                     ShellUtils.execRootAction("pm disable-user --user 0 " + pkg + " 2>/dev/null");
+                                    ConfigManager.recordFrozen(pkg, true);
                                 } else {
                                     ShellUtils.execRootAction("pm enable " + pkg + " 2>/dev/null");
+                                    ConfigManager.recordFrozen(pkg, false);
                                 }
                                 mainHandler.post(new Runnable() {
                                     @Override
@@ -2981,8 +2983,10 @@ public class MainActivity extends Activity {
                     public void run() {
                         if (item.isEnabled) {
                             ShellUtils.execRootAction("pm disable-user --user 0 " + pkg + " 2>/dev/null");
+                            ConfigManager.recordFrozen(pkg, true);
                         } else {
                             ShellUtils.execRootAction("pm enable " + pkg + " 2>/dev/null");
+                            ConfigManager.recordFrozen(pkg, false);
                         }
                         item.isEnabled = !item.isEnabled;
                         mainHandler.post(new Runnable() {

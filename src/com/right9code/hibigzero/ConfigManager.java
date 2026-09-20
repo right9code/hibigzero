@@ -540,6 +540,89 @@ public class ConfigManager {
         }
     }
 
+    // ── Frozen-package ledger (basis for UNDO / RESTORE) ──────────────────
+    // Records the packages THIS app disabled with `pm disable-user`, as it goes.
+    //
+    // The device cannot tell us which freezes are ours. `pm list packages -d`
+    // reports 112 packages here - a mix of our work and pre-existing vendor
+    // freezes, including com.android.launcher3, com.android.dialer, the telephony
+    // stack and com.google.android.gms - and nothing marks which is which. A
+    // restore that guessed "enable everything frozen" would re-enable the vendor's
+    // own freezes, bring GMS back (undoing the point of this app) and could put a
+    // second launcher on the device.
+    //
+    // So the ledger is the only safe source, and it comes with an honest limit: it
+    // can undo what HiBig Zero does from now on. Freezes applied before the ledger
+    // existed cannot be attributed, except for the category rules, which ARE
+    // reconstructable from the *_PKGS_SEL selections in the config.
+    public static final String FROZEN_LEDGER_PATH = "/data/local/tmp/hibreak_frozen.txt";
+
+    /**
+     * Never re-enabled by a restore, whatever the ledger says. These are on the
+     * device's frozen list for a reason - the user's launcher, the telephony stack,
+     * Bluetooth, and Google Play services, which this app deliberately keeps frozen.
+     * Re-enabling GMS would undo the point of the app, and re-enabling
+     * com.android.launcher3 would put a second launcher on the device.
+     */
+    public static final Set<String> NEVER_UNFREEZE = new HashSet<String>(Arrays.asList(
+        "com.android.launcher3",
+        "com.right9code.anyhome",
+        "com.right9code.hibigzero",
+        "android",
+        "com.android.systemui",
+        "com.google.android.gms",
+        "com.android.vending",
+        "com.google.android.gsf",
+        "com.android.phone",
+        "com.android.dialer",
+        "com.android.contacts",
+        "com.android.mms",
+        "com.android.mms.service",
+        "com.android.bluetooth",
+        "com.android.nfc",
+        "com.android.settings",
+        "com.android.providers.telephony"
+    ));
+
+    public static Set<String> loadFrozenLedger() {
+        Set<String> pkgs = new HashSet<String>();
+        BufferedReader br = null;
+        try {
+            br = new BufferedReader(new FileReader(FROZEN_LEDGER_PATH));
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty() && !line.startsWith("#")) pkgs.add(line);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            try { if (br != null) br.close(); } catch (Exception ignored) {}
+        }
+        return pkgs;
+    }
+
+    public static void saveFrozenLedger(Set<String> pkgs) {
+        StringBuilder sb = new StringBuilder("# Packages frozen by HiBig Zero\n");
+        for (String pkg : pkgs) sb.append(pkg).append("\n");
+        ShellUtils.execRoot(
+            "printf '" + sb.toString().replace("'", "'\\''") + "' > " + FROZEN_LEDGER_PATH +
+            " && chmod 666 " + FROZEN_LEDGER_PATH + " 2>/dev/null", false);
+    }
+
+    /** Adds or removes a package from the ledger. Call after a successful freeze.
+     *  Packages in NEVER_UNFREEZE are refused, so a restore can never re-enable
+     *  them even if they somehow reach the ledger. */
+    public static void recordFrozen(String pkg, boolean frozen) {
+        try {
+            if (frozen && NEVER_UNFREEZE.contains(pkg)) return;
+            Set<String> pkgs = loadFrozenLedger();
+            boolean changed = frozen ? pkgs.add(pkg) : pkgs.remove(pkg);
+            if (changed) saveFrozenLedger(pkgs);
+        } catch (Exception e) {
+            ShellUtils.appendLog("frozen ledger error: " + e.getMessage());
+        }
+    }
+
     public static String getLastBootTime() {
         try {
             BufferedReader br = new BufferedReader(new FileReader(BOOT_TS_PATH));

@@ -2292,9 +2292,9 @@ public class MainActivity extends Activity {
         switch (mode) {
             case 0: return "A-Z";
             case 1: return "Z-A";
-            case 2: return "FROZEN";
-            case 3: return "ACTIVE";
-            case 4: return "PROT";
+            case 2: return "FROZEN FIRST";
+            case 3: return "ACTIVE FIRST";
+            case 4: return "PROTECTED FIRST";
             default: return "A-Z";
         }
     }
@@ -2556,6 +2556,7 @@ public class MainActivity extends Activity {
             if ("SYSTEM".equals(debloatFilter) && !item.isSystem) continue;
             if ("FROZEN".equals(debloatFilter) && item.isEnabled) continue;
             if ("PROT".equals(debloatFilter) && !item.isProt) continue;
+            if ("RSTR".equals(debloatFilter) && !item.isRestricted) continue;
 
             if (!q.isEmpty()) {
                 if (!item.pkg.toLowerCase().contains(q) && !item.label.toLowerCase().contains(q)) {
@@ -2589,7 +2590,10 @@ public class MainActivity extends Activity {
         });
 
         TextView hdr = new TextView(this);
-        hdr.setText(filtered.size() + "/" + cachedAppItems.size() + " PKGS [" + debloatFilter + "]");
+        // Show the same readable label the FILTER button and its dialog use, instead
+        // of the internal code (a header reading "[RSTR]" is what those codes were
+        // meant to hide).
+        hdr.setText(filtered.size() + "/" + cachedAppItems.size() + " PKGS [" + getFilterLabel(debloatFilter) + "]");
         hdr.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         setSp(hdr, 10);
         hdr.setTextColor(Color.BLACK);

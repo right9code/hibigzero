@@ -14,6 +14,8 @@ public class ConfigManager {
     public static final String CONF_PATH          = "/data/local/tmp/hibreak.conf";
     public static final String BOOT_TS_PATH       = "/data/local/tmp/hibreak_last_boot.txt";
     public static final String RESTRICTED_PATH     = "/data/local/tmp/hibreak_restricted.txt";
+    /** Boot-loop guard state: line 1 = epoch millis of the last boot, line 2 = streak. */
+    public static final String BOOT_STREAK_PATH    = "/data/local/tmp/hibreak_boot_streak.txt";
 
     public static final String[] CONF_KEYS = {
         "FIX_UART","GOOGLE_STACK","BIGME_BLOAT","MTK_CELLULAR","AOSP_STUBS",
@@ -23,7 +25,8 @@ public class ConfigManager {
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
         "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
         "KILL_SHUTDOWN_ALARM","SUPPRESS_JS_IDLE","WIDE_ALARM_FUZZ","INSTANT_LOCK",
-        "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL","DRY_RUN"
+        "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL","DRY_RUN",
+        "RULES_SUSPENDED"
     };
 
     public static final String GOOGLE_PKGS =
@@ -529,6 +532,9 @@ public class ConfigManager {
         // applied, so a whole rule set can be rehearsed. Read-only probes still run,
         // so every card keeps showing the real current state.
         p.setProperty("DRY_RUN", "0");
+        // Set by the boot-loop guard when consecutive fast boots suspend the rule
+        // pass. The UI reads it to show the notice and the RESUME button.
+        p.setProperty("RULES_SUSPENDED", "0");
         p.setProperty("DISABLE_ANIMATIONS", "0");
         p.setProperty("KILL_SHUTDOWN_ALARM", "0");
         p.setProperty("SUPPRESS_JS_IDLE", "0");
@@ -697,6 +703,101 @@ public class ConfigManager {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    // ── Boot-loop guard ───────────────────────────────────────────────────
+    // A rule that loops the device is the worst failure this app can produce, and
+    // it is the one failure the user cannot fix from inside the app, because the
+    // app is what is looping. So consecutive fast boots suspend the boot rule
+    // pass. The count is persisted BEFORE any rule runs: if the write came after
+    // the pass, the one boot that matters most would be the one never recorded.
+
+    /** A boot this soon after the previous one counts as a loop, not a restart. */
+    public static final long FAST_BOOT_SECONDS = 180L;
+    /** This many consecutive fast boots suspends the boot rule pass. */
+    public static final int MAX_FAST_BOOTS = 3;
+
+    /**
+     * Records this boot and returns the streak of consecutive fast boots.
+     *
+     * If the state file cannot be read the streak restarts at zero: a fresh
+     * install has no file, and suspending rules on every new install would be a
+     * far worse failure than missing one detection. The guard fails open.
+     */
+    public static int recordBootAndGetStreak() {
+        long now = System.currentTimeMillis();
+        long[] prev = readBootStreakFile();
+        long gapSec = prev[0] > 0 ? (now - prev[0]) / 1000L : -1L;
+        int streak = (gapSec >= 0 && gapSec <= FAST_BOOT_SECONDS) ? (int) prev[1] + 1 : 0;
+        writeBootStreakFile(now, streak);
+        return streak;
+    }
+
+    public static int getBootStreak() {
+        return (int) readBootStreakFile()[1];
+    }
+
+    /** Clears the streak, so the next boot starts counting from scratch. */
+    public static void resetBootStreak() {
+        writeBootStreakFile(System.currentTimeMillis(), 0);
+    }
+
+    private static long[] readBootStreakFile() {
+        long at = 0, streak = 0;
+        BufferedReader br = null;
+        try {
+            br = new BufferedReader(new FileReader(BOOT_STREAK_PATH));
+            String l1 = br.readLine();
+            String l2 = br.readLine();
+            if (l1 != null) at = Long.parseLong(l1.trim());
+            if (l2 != null) streak = Long.parseLong(l2.trim());
+        } catch (Exception ignored) {
+        } finally {
+            try { if (br != null) br.close(); } catch (Exception ignored) {}
+        }
+        return new long[] { at, streak };
+    }
+
+    private static void writeBootStreakFile(long at, int streak) {
+        // execRoot, not execRootAction: this is the guard's own bookkeeping, like
+        // the log file, so it has to be recorded even while dry-run is on.
+        ShellUtils.execRoot(
+            "printf '%s\\n%s\\n' '" + at + "' '" + streak + "' > " + BOOT_STREAK_PATH +
+            secureFileTail(BOOT_STREAK_PATH), false);
+    }
+
+    public static boolean areRulesSuspended() {
+        try {
+            return "1".equals(loadConfig().getProperty("RULES_SUSPENDED", "0").trim());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** Writes the flag only when it actually changes, so a normal boot costs no write. */
+    public static void setRulesSuspended(boolean suspended) {
+        try {
+            Properties p = loadConfig();
+            String want = suspended ? "1" : "0";
+            if (want.equals(p.getProperty("RULES_SUSPENDED", "0").trim())) return;
+            p.setProperty("RULES_SUSPENDED", want);
+            saveConfig(p);
+        } catch (Exception e) {
+            ShellUtils.appendLog("setRulesSuspended error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Called once per REAL boot: records it and reports whether the rule pass may
+     * run. Manual "APPLY ALL RULES" does not come through here, because a manual
+     * apply is not a boot and must not count toward the streak.
+     *
+     * @return true when the boot rules should be applied
+     */
+    public static boolean shouldApplyBootRules() {
+        boolean suspend = recordBootAndGetStreak() >= MAX_FAST_BOOTS;
+        setRulesSuspended(suspend);
+        return !suspend;
     }
 
     public static Set<String> loadRestrictedPkgs() {

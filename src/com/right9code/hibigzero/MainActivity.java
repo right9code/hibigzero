@@ -59,6 +59,11 @@ public class MainActivity extends Activity {
     private boolean logDrawerVisible = false;
     private TextView logDrawerView = null;   // live log view, hosted in the banner popup
     private AlertDialog logDialog = null;    // currently-open log popup (if any)
+    // Boot-loop guard banner. Hidden unless rules are actually suspended, so the
+    // header stays as it was in the normal case.
+    private TextView bootSuspendView = null;
+    private Button bootResumeBtn = null;
+    private TextView bootStatusView = null;   // "[OK] BOOT: <stamp>" header line
 
     // Last self-protection probe result (uid|bgOp|dozeExempt|processLimit) + its
     // timestamp. Probed once on launch and on demand — never on a timer.
@@ -247,15 +252,61 @@ public class MainActivity extends Activity {
         headerBatteryView.setPadding(0, dpToPx(2), 0, 0);
         header.addView(headerBatteryView);
 
-        // Boot confirmation
-        String lastBoot = ConfigManager.getLastBootTime();
-        TextView bootTv = new TextView(this);
-        bootTv.setText(lastBoot.isEmpty() ? "[!!] BOOT: not applied yet" : "[OK] BOOT: " + lastBoot);
-        setSp(bootTv, 11);
-        bootTv.setTypeface(Typeface.DEFAULT);
-        bootTv.setTextColor(Color.WHITE);
-        bootTv.setPadding(0, dpToPx(2), 0, 0);
-        header.addView(bootTv);
+        // Boot confirmation (refreshed after a resume, which rewrites the stamp)
+        bootStatusView = new TextView(this);
+        bootStatusView.setText(bootStatusText());
+        setSp(bootStatusView, 11);
+        bootStatusView.setTypeface(Typeface.DEFAULT);
+        bootStatusView.setTextColor(Color.WHITE);
+        bootStatusView.setPadding(0, dpToPx(2), 0, 0);
+        header.addView(bootStatusView);
+
+        // ── Boot-loop suspension notice ────────────────────────────────────
+        // Suspension is invisible unless it is said out loud, and a silently
+        // skipped rule pass just looks like the app stopped working. This is the
+        // only place the user learns about it - and the only way back.
+        bootSuspendView = new TextView(this);
+        setSp(bootSuspendView, 11);
+        bootSuspendView.setTypeface(Typeface.DEFAULT_BOLD);
+        bootSuspendView.setTextColor(Color.WHITE);
+        bootSuspendView.setPadding(0, dpToPx(4), 0, 0);
+        header.addView(bootSuspendView);
+
+        bootResumeBtn = new Button(this);
+        bootResumeBtn.setText("RESUME RULES");
+        setSp(bootResumeBtn, 11);
+        styleEinkButton(bootResumeBtn, false);
+        bootResumeBtn.setPadding(0, dpToPx(6), 0, dpToPx(6));
+        bootResumeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                bootResumeBtn.setEnabled(false);
+                bootResumeBtn.setText("RESUMING...");
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        // applyAllRulesPublic already clears the streak and the flag,
+                        // so RESUME and APPLY ALL mean exactly the same thing.
+                        ShellUtils.appendLog("Boot-loop guard cleared by user, re-applying rules");
+                        new BootReceiver().applyAllRulesPublic(MainActivity.this);
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                bootResumeBtn.setEnabled(true);
+                                bootResumeBtn.setText("RESUME RULES");
+                                updateBootSuspensionBanner();
+                                updateBootStatusLine();
+                                if (logDrawerView != null && logDrawerVisible) {
+                                    logDrawerView.setText(ShellUtils.readLog(15));
+                                }
+                            }
+                        });
+                    }
+                }).start();
+            }
+        });
+        header.addView(bootResumeBtn);
+        updateBootSuspensionBanner();
 
         root.addView(header);
 
@@ -1233,6 +1284,32 @@ public class MainActivity extends Activity {
         authorView.setText(ConfigManager.isDryRun()
             ? "by right9code    [ DRY RUN - NOTHING APPLIED ]"
             : "by right9code");
+    }
+
+    /**
+     * Shows the boot-loop suspension notice only while rules are actually
+     * suspended, so the header is unchanged in the normal case.
+     */
+    private void updateBootSuspensionBanner() {
+        if (bootSuspendView == null || bootResumeBtn == null) return;
+        boolean suspended = ConfigManager.areRulesSuspended();
+        int streak = ConfigManager.getBootStreak();
+        bootSuspendView.setVisibility(suspended ? View.VISIBLE : View.GONE);
+        bootResumeBtn.setVisibility(suspended ? View.VISIBLE : View.GONE);
+        if (suspended) {
+            bootSuspendView.setText("[!!] RULES SUSPENDED: " + streak
+                + " fast boots in a row. Nothing is applied at boot.");
+        }
+    }
+
+    private String bootStatusText() {
+        String lastBoot = ConfigManager.getLastBootTime();
+        return lastBoot.isEmpty() ? "[!!] BOOT: not applied yet" : "[OK] BOOT: " + lastBoot;
+    }
+
+    /** The resume path rewrites the stamp this line shows, so it has to be re-read. */
+    private void updateBootStatusLine() {
+        if (bootStatusView != null) bootStatusView.setText(bootStatusText());
     }
 
     // ── PROTECTION card: check + self-repair, battery-first ────────────────

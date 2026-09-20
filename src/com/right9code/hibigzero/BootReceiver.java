@@ -15,7 +15,18 @@ public class BootReceiver extends BroadcastReceiver {
             @Override
             public void run() {
                 try {
-                    applyAllRules(context);
+                    // Boot-loop guard. Records this boot before anything is applied,
+                    // and after MAX_FAST_BOOTS consecutive fast boots stops applying
+                    // rules entirely - including self-protection, because "suspended"
+                    // has to mean the app touches nothing. The app re-asserts its own
+                    // appops on launch anyway, so it stays reachable to fix things.
+                    if (!ConfigManager.shouldApplyBootRules()) {
+                        ShellUtils.appendLog("=== BootReceiver: " + ConfigManager.getBootStreak()
+                            + " fast boots in a row - rules SUSPENDED, nothing applied ===");
+                        ShellUtils.appendLog("Open HiBig Zero and tap RESUME RULES to apply again");
+                    } else {
+                        applyAllRules(context);
+                    }
                     writeBootTime();
                 } finally {
                     // Boot is a short-lived receiver process: flush before returning.
@@ -26,7 +37,19 @@ public class BootReceiver extends BroadcastReceiver {
         }).start();
     }
 
-    public void applyAllRulesPublic(android.content.Context ctx) { applyAllRules(ctx); writeBootTime(); }
+    /**
+     * Manual entry point for "APPLY ALL RULES". A manual apply is an explicit
+     * instruction from the user, so it also clears the boot-loop suspension and
+     * starts a fresh streak - which is why it does not go through
+     * {@link ConfigManager#shouldApplyBootRules()}: only a real boot counts as a
+     * boot.
+     */
+    public void applyAllRulesPublic(android.content.Context ctx) {
+        ConfigManager.resetBootStreak();
+        ConfigManager.setRulesSuspended(false);
+        applyAllRules(ctx);
+        writeBootTime();
+    }
 
     /**
      * The package categories, in application order. These were four copy-pasted

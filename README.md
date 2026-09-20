@@ -220,6 +220,27 @@ removed via root. `File.delete()` failed silently on that for a long time, which
 left the marker behind permanently and made it useless as a "a clamp is applied"
 flag.
 
+### 🛡️ Boot-loop guard
+
+A rule that loops the device is the worst failure this app can produce, and the
+one failure the user cannot fix from inside the app — because the app is what is
+looping. So the boot receiver counts boots: a boot within `FAST_BOOT_SECONDS`
+(180 s) of the previous one is treated as a loop rather than a restart, and after
+`MAX_FAST_BOOTS` (3) in a row the boot rule pass is **suspended entirely**,
+including self-protection. "Suspended" has to mean the app touches nothing.
+
+The count is written **before** any rule runs. If it were written afterwards, the
+one boot that matters most would be the one that never recorded it. The guard
+fails open: an unreadable state file restarts the streak at zero, because
+suspending rules on every fresh install would be far worse than missing one
+detection.
+
+Suspension is surfaced in the header — `[!!] RULES SUSPENDED: n fast boots in a
+row` plus a **RESUME RULES** button — because a silently skipped rule pass just
+looks like the app stopped working. RESUME and the normal **APPLY ALL RULES**
+button do the same thing: clear the flag, reset the streak and apply. Neither
+goes through the boot path, so a manual apply is never counted as a boot.
+
 ### ⏱️ Command execution
 
 `ShellUtils.execRoot()` drains stdout and stderr on their own threads and gives

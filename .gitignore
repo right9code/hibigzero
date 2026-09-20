@@ -44,3 +44,4 @@ hwparam.json
 # binaries (keeps the repo small; the self-updater already reads Releases).
 releases/*.apk
 releases/*.apk.idsig
+releases/*.sha256

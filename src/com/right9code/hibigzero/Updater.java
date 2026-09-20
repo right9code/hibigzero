@@ -93,6 +93,12 @@ public class Updater {
                         if (listener != null) listener.onCompleted(false, "No release APK asset found on GitHub");
                         return;
                     }
+                    if (!NetGuard.isAllowedUrl(foundUrl)) {
+                        ShellUtils.appendLog("Updater: release asset URL is not on GitHub - refusing");
+                        if (listener != null) listener.onCompleted(false,
+                            "Release asset points outside GitHub - refusing to download");
+                        return;
+                    }
 
                     final String finalApkUrl = foundUrl;
                     final long finalApkSize = foundSize;
@@ -146,11 +152,18 @@ public class Updater {
                         return;
                     }
 
-                    // Verify APK
+                    // Verify APK: structure first, then that it really is OUR app.
                     if (listener != null) listener.onProgress("Verifying APK...", 90);
                     if (!verifyApk(apkFile, expectedSize)) {
                         apkFile.delete();
                         if (listener != null) listener.onCompleted(false, "Corrupted APK download");
+                        return;
+                    }
+                    if (!isSignedBySameKey(context, apkFile)) {
+                        apkFile.delete();
+                        ShellUtils.appendLog("Updater: refused update - APK is not signed with this app's key");
+                        if (listener != null) listener.onCompleted(false,
+                            "Downloaded APK is not signed with this app's key - refusing to install");
                         return;
                     }
 
@@ -226,34 +239,6 @@ public class Updater {
         return 0;
     }
 
-    private static String resolveRedirectUrl(String urlStr) {
-        int maxRedirects = 5;
-        String currentUrl = urlStr;
-        while (maxRedirects-- > 0) {
-            try {
-                HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
-                conn.setInstanceFollowRedirects(false);
-                conn.setRequestProperty("User-Agent", "HiBigZero-Updater");
-                conn.setConnectTimeout(10000);
-                conn.setReadTimeout(15000);
-                int code = conn.getResponseCode();
-                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-                    String location = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    if (location != null && !location.isEmpty()) {
-                        currentUrl = location;
-                        continue;
-                    }
-                }
-                conn.disconnect();
-                return currentUrl;
-            } catch (Exception e) {
-                return currentUrl;
-            }
-        }
-        return currentUrl;
-    }
-
     private static boolean downloadWithResumeAndRetry(String downloadUrl, File outFile,
                                                      long expectedSize, UpdateListener listener) {
         int maxRetries = 3;
@@ -271,9 +256,16 @@ public class Updater {
                         expectedSize > 0 ? (int)(existingBytes * 80 / expectedSize) : 0);
                 }
 
-                // Resolve any initial redirect before opening the streaming connection
-                String targetUrl = resolveRedirectUrl(downloadUrl);
+                // Resolve redirects through the allow-list before opening the streaming
+                // connection, and keep auto-follow OFF so an extra hop the server
+                // springs on us cannot bypass that check.
+                String targetUrl = NetGuard.resolveAllowedRedirect(downloadUrl, "HiBigZero-Updater");
+                if (targetUrl == null) {
+                    ShellUtils.appendLog("Updater: refusing download - redirect left the GitHub allow-list");
+                    return false;
+                }
                 conn = (HttpURLConnection) new URL(targetUrl).openConnection();
+                conn.setInstanceFollowRedirects(false);
                 conn.setConnectTimeout(15000);
                 conn.setReadTimeout(30000);
                 conn.setRequestProperty("User-Agent", "HiBigZero-Updater");
@@ -331,6 +323,12 @@ public class Updater {
         return false;
     }
 
+    /**
+     * Structural check only: the file exists, matches the advertised size, and
+     * starts with the zip magic. This proves the bytes are a well-formed archive
+     * and nothing more - any APK passes it - so it is always paired with
+     * isSignedBySameKey() below.
+     */
     private static boolean verifyApk(File apkFile, long expectedSize) {
         if (!apkFile.exists()) return false;
         if (expectedSize > 0 && apkFile.length() != expectedSize) return false;
@@ -342,6 +340,61 @@ public class Updater {
             return magic[0] == 'P' && magic[1] == 'K';
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * True when the archive carries a signer matching one of this app's own signers.
+     *
+     * This is what makes the update trustworthy: Android will only install an APK
+     * over an existing app when the signing key matches, so a substituted download
+     * cannot end up running - but without this check we would hand a foreign APK to
+     * the installer and only find out from its error message. Catching it here means
+     * the failure is reported as what it is, before anything is installed.
+     *
+     * Fails closed: an unreadable archive, a missing signing block or an unexpected
+     * error all count as a mismatch, because the cost of a wrong "yes" is installing
+     * third-party code as root.
+     */
+    public static boolean isSignedBySameKey(Context ctx, File apk) {
+        try {
+            android.content.pm.PackageManager pm = ctx.getPackageManager();
+            android.content.pm.PackageInfo self = pm.getPackageInfo(
+                ctx.getPackageName(), android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+            android.content.pm.PackageInfo other = pm.getPackageArchiveInfo(
+                apk.getAbsolutePath(), android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES);
+            if (self == null || other == null || self.signingInfo == null || other.signingInfo == null) {
+                return false;
+            }
+
+            android.content.pm.Signature[] mine = self.signingInfo.hasMultipleSigners()
+                ? self.signingInfo.getApkContentsSigners()
+                : self.signingInfo.getSigningCertificateHistory();
+            android.content.pm.Signature[] theirs = other.signingInfo.hasMultipleSigners()
+                ? other.signingInfo.getApkContentsSigners()
+                : other.signingInfo.getSigningCertificateHistory();
+            if (mine == null || theirs == null || mine.length == 0 || theirs.length == 0) return false;
+
+            java.util.Set<String> mineHashes = new java.util.HashSet<String>();
+            for (android.content.pm.Signature s : mine) mineHashes.add(sha256Hex(s.toByteArray()));
+            for (android.content.pm.Signature s : theirs) {
+                if (mineHashes.contains(sha256Hex(s.toByteArray()))) return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            ShellUtils.appendLog("Updater: signature check could not run: " + t);
+            return false;
+        }
+    }
+
+    private static String sha256Hex(byte[] data) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(data);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) sb.append(String.format("%02x", b & 0xFF));
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
         }
     }
 

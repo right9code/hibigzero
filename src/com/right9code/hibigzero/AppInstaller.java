@@ -382,7 +382,10 @@ public class AppInstaller {
             JSONObject asset = assets.getJSONObject(i);
             String name = asset.getString("name");
             if (p.matcher(name).matches()) {
-                return asset.getString("browser_download_url");
+                String url = asset.getString("browser_download_url");
+                // This gets installed as root, so a URL that is not GitHub is
+                // refused rather than trusted.
+                return NetGuard.isAllowedUrl(url) ? url : null;
             }
         }
         return null;
@@ -420,7 +423,15 @@ public class AppInstaller {
                     (expectedSize > 0 ? " / " + formatSize(expectedSize) : ""),
                     expectedSize > 0 ? (int)(existingBytes * 80 / expectedSize) : 0);
 
-                HttpURLConnection conn = (HttpURLConnection) new URL(downloadUrl).openConnection();
+                // Every hop is checked against the GitHub allow-list, and auto-follow
+                // is off so a later redirect cannot slip past the check.
+                String targetUrl = NetGuard.resolveAllowedRedirect(downloadUrl, "HiBigZero-Updater");
+                if (targetUrl == null) {
+                    ShellUtils.appendLog("AppInstaller: refusing download - URL or redirect left the GitHub allow-list");
+                    return false;
+                }
+                HttpURLConnection conn = (HttpURLConnection) new URL(targetUrl).openConnection();
+                conn.setInstanceFollowRedirects(false);
                 conn.setConnectTimeout(10000);
                 conn.setReadTimeout(30000);
 

@@ -69,6 +69,29 @@ Tap the **UPDATE** button in the header to check for new releases of HiBig Zero 
 * Downloads with progress percentage, installs via root `pm install`
 * Handles HTTP redirects, resume on failure, and APK verification
 
+### Download trust boundaries
+
+Updates and app installs are both fetched as **root**, so a misdirected download
+is not a cosmetic problem. Two rules are enforced by `NetGuard`, shared by the
+updater and the app installer so the policy cannot drift between them:
+
+* **HTTPS only, GitHub hosts only** — `github.com`, `*.github.com` and
+  `*.githubusercontent.com`. Every redirect hop is followed manually and
+  re-checked, with `setInstanceFollowRedirects(false)` so the HTTP stack cannot
+  make an unchecked hop of its own. A hop that leaves the list fails the
+  download rather than falling back to the original URL.
+* **Strict `host[:port]` authority** — any character that is not part of a
+  hostname or port is refused, and ports other than 443 are rejected. This
+  matters because URL parsers disagree: `https://evil.com\@github.com/x` is read
+  as host `github.com` by `java.net.URL` (last `@` wins) while other clients
+  treat `\` as `/` and connect to `evil.com`.
+
+The updater additionally **pins the signing key**: a downloaded APK must be
+signed by the same certificate as the running app. Android enforces this at
+install time anyway, but checking first means a substituted download is reported
+as what it is instead of failing with an opaque installer error. The check fails
+closed.
+
 ---
 
 ## 🔋 Measured Impact & Benchmarks

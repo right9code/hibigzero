@@ -545,32 +545,43 @@ public class ConfigManager {
             " && chmod 666 " + RESTRICTED_PATH + " 2>/dev/null", false);
     }
 
+    // Only appops that actually exist on this platform are issued. The previous
+    // list also set ALARM_WAKEUP, BOOT_COMPLETED, RECEIVE_BOOT_COMPLETED, INTERNET,
+    // ACCESS_NETWORK_STATE and JOB. None of those are op names here, so each died
+    // with "Unknown operation string" inside 2>/dev/null and the command looked
+    // like it was blocking alarms, boot receivers, network and jobs when it was
+    // not. RUN_ANY_IN_BACKGROUND and START_FOREGROUND are the API 34 ops that carry
+    // the same intent and were missing. There is no appop for network access; real
+    // background data blocking needs `cmd netpolicy add restrict-background-blacklist
+    // <UID>`, which is deliberately not done here (it takes a UID, not a package,
+    // and it changes what the app can do, not just how often it runs).
+    //
+    // SCHEDULE_EXACT_ALARM is kept because it is a real op, but note it is
+    // permission-backed: for a package that does not hold the permission the write
+    // is accepted, exits 0, and is simply never recorded, so it does nothing there.
+    // It only bites packages that actually requested exact-alarm access.
+    //
+    // The trailing `settings put global hidden_api_policy_p_apps 1` that used to sit
+    // here is gone: it flipped a *global* setting (hidden API enforcement, warn-only)
+    // as a side effect of restricting one package, unrestrict never undid it, and it
+    // has nothing to do with restricting an app.
     public static String buildRestrictCmd(String pkg) {
         return "am force-stop " + pkg + " 2>/dev/null; " +
             "cmd appops set " + pkg + " RUN_IN_BACKGROUND ignore 2>/dev/null; " +
+            "cmd appops set " + pkg + " RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; " +
             "cmd appops set " + pkg + " WAKE_LOCK ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " ALARM_WAKEUP ignore 2>/dev/null; " +
             "cmd appops set " + pkg + " SCHEDULE_EXACT_ALARM ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " BOOT_COMPLETED ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " RECEIVE_BOOT_COMPLETED ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " INTERNET ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " ACCESS_NETWORK_STATE ignore 2>/dev/null; " +
-            "cmd appops set " + pkg + " JOB ignore 2>/dev/null; " +
+            "cmd appops set " + pkg + " START_FOREGROUND ignore 2>/dev/null; " +
             "am set-standby-bucket " + pkg + " restricted 2>/dev/null; " +
-            "dumpsys deviceidle whitelist -" + pkg + " 2>/dev/null; " +
-            "settings put global hidden_api_policy_p_apps 1 2>/dev/null";
+            "dumpsys deviceidle whitelist -" + pkg + " 2>/dev/null";
     }
 
     public static String buildUnrestrictCmd(String pkg) {
         return "cmd appops set " + pkg + " RUN_IN_BACKGROUND allow 2>/dev/null; " +
+            "cmd appops set " + pkg + " RUN_ANY_IN_BACKGROUND allow 2>/dev/null; " +
             "cmd appops set " + pkg + " WAKE_LOCK allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " ALARM_WAKEUP allow 2>/dev/null; " +
             "cmd appops set " + pkg + " SCHEDULE_EXACT_ALARM allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " BOOT_COMPLETED allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " RECEIVE_BOOT_COMPLETED allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " INTERNET allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " ACCESS_NETWORK_STATE allow 2>/dev/null; " +
-            "cmd appops set " + pkg + " JOB allow 2>/dev/null; " +
+            "cmd appops set " + pkg + " START_FOREGROUND allow 2>/dev/null; " +
             "am set-standby-bucket " + pkg + " active 2>/dev/null";
     }
 

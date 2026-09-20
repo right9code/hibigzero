@@ -17,7 +17,7 @@ public class ConfigManager {
     public static final String[] CONF_KEYS = {
         "FIX_UART","GOOGLE_STACK","BIGME_BLOAT","MTK_CELLULAR","AOSP_STUBS",
         "LOCKDOWN_GBOARD","AGGRESSIVE_DOZE","SUPPRESS_ALARMS","KERNEL_SENSOR",
-        "BATTERY_CAP_85","GOVERNOR_PROFILE","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
+        "BATTERY_CAP_85","GOVERNOR_PROFILE","CPU_OPTIMIZER","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
         "SLEEP_GOVERNOR","SLEEP_GOVERNOR_ENABLED",
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
         "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
@@ -449,6 +449,9 @@ public class ConfigManager {
         p.setProperty("KERNEL_SENSOR", "0");
         p.setProperty("BATTERY_CAP_85", "0");
         p.setProperty("GOVERNOR_PROFILE", "schedutil_efficient");
+        // CPU_OPTIMIZER has its own key. It used to write into GOVERNOR_PROFILE,
+        // which clobbered the wake/sleep profile name with "1".
+        p.setProperty("CPU_OPTIMIZER", "0");
         p.setProperty("HOTPLUG_4_CORES", "0");
         p.setProperty("WIFI_SLEEP_ZERO", "0");
         p.setProperty("SLEEP_GOVERNOR", "deep_sleep");
@@ -629,13 +632,14 @@ public class ConfigManager {
         } else {
             // For system-excidle packages, whitelist removal re-adds immediately.
             // Use appops to silence the app instead — achieves the same effect.
+            // Only app-ops that exist on API 34: ALARM_WAKEUP, BOOT_COMPLETED and
+            // RECEIVE_BOOT_COMPLETED were removed and made these calls no-ops.
             return "dumpsys deviceidle whitelist -" + pkg + " 2>/dev/null; " +
                 "cmd appops set " + pkg + " RUN_IN_BACKGROUND ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; " +
                 "cmd appops set " + pkg + " WAKE_LOCK ignore 2>/dev/null; " +
-                "cmd appops set " + pkg + " ALARM_WAKEUP ignore 2>/dev/null; " +
                 "cmd appops set " + pkg + " SCHEDULE_EXACT_ALARM ignore 2>/dev/null; " +
-                "cmd appops set " + pkg + " BOOT_COMPLETED ignore 2>/dev/null; " +
-                "cmd appops set " + pkg + " RECEIVE_BOOT_COMPLETED ignore 2>/dev/null; " +
+                "cmd appops set " + pkg + " START_FOREGROUND ignore 2>/dev/null; " +
                 "am set-standby-bucket " + pkg + " restricted 2>/dev/null";
         }
     }
@@ -690,10 +694,70 @@ public class ConfigManager {
             onToken + " || echo " + offToken;
     }
 
+    // ── CPU uncap (CPU_OPTIMIZER) ─────────────────────────────────────────
+    /**
+     * Release MediaTek's 2.06 GHz ceiling and let the little cluster scale to
+     * 2.2 GHz. The ceiling is PPM_POLICY_USER_LIMIT (policy 7), isolated on
+     * device with every other variable held constant:
+     *
+     *   policy6 ON,  policy7 ON   -> p0 max 2068000
+     *   policy6 OFF, policy7 ON   -> p0 max 2068000, and 2068000 under 4 busy threads
+     *   policy6 OFF, policy7 OFF  -> p0 max 2200000, and 2200000 under load
+     *
+     * So `echo 7 0` is the unlock; the profiles set the hard limits per profile.
+     * CAUTION: scaling_max_freq echoes whatever you write even while an effective
+     * clamp is in force, so it is not a reliable test on its own - policy 7's
+     * state is the truth, which is what the probe reads.
+     */
+    public static String getCpuUncapCmd() {
+        return "magiskpolicy --live \"allow magisk proc_ppm file { read write open getattr }\" 2>/dev/null; " +
+            "chmod 666 /proc/ppm/policy_status /proc/ppm/policy/hard_userlimit* 2>/dev/null; " +
+            "echo 7 0 > /proc/ppm/policy_status 2>/dev/null; " +
+            "echo 0 2200000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+            "echo 1 1600000 > /proc/ppm/policy/hard_userlimit_max_cpu_freq 2>/dev/null; " +
+            "echo 0 900000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+            "echo 1 745000 > /proc/ppm/policy/hard_userlimit_min_cpu_freq 2>/dev/null; " +
+            "chmod 666 /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
+            "echo 2200000 > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null; " +
+            "chmod 666 /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null; " +
+            "echo 1600000 > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null";
+    }
+    /** Little-cluster ceiling: 2200000 = uncapped, 2068000 = 2.06GHz lock on. */
+    public static String getCpuUncapProbeCmd() {
+        return "echo p0max=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null) " +
+            "p4max=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null)";
+    }
+
+    // ── Suppress GMS alarms (SUPPRESS_ALARMS) ─────────────────────────────
+    /**
+     * Real app-ops only. This used to set ALARM_WAKEUP, which does not exist on
+     * API 34 ("Error: Unknown operation string: ALARM_WAKEUP"), so the toggle
+     * silently did nothing. Verified present on device: SCHEDULE_EXACT_ALARM,
+     * RUN_IN_BACKGROUND, WAKE_LOCK.
+     */
+    public static String getSuppressGmsAlarmsCmd(boolean enable) {
+        String m = enable ? "ignore" : "allow";
+        String cmd = "cmd appops set com.google.android.gms RUN_IN_BACKGROUND " + m + " 2>/dev/null; " +
+            "cmd appops set com.google.android.gms RUN_ANY_IN_BACKGROUND " + m + " 2>/dev/null; " +
+            "cmd appops set com.google.android.gms WAKE_LOCK " + m + " 2>/dev/null; " +
+            "cmd appops set com.google.android.gms START_FOREGROUND " + m + " 2>/dev/null";
+        // NOTE: SCHEDULE_EXACT_ALARM is deliberately absent - it is backed by the
+        // "Alarms & reminders" permission and `appops set` on it is immediately
+        // dropped for GMS (read-back: "No operations. Default mode: default").
+        // `jobscheduler cancel` (not cancel-all, which is not a valid verb on
+        // API 34) drops GMS's already-queued jobs.
+        return enable ? cmd + "; cmd jobscheduler cancel com.google.android.gms 2>/dev/null" : cmd;
+    }
+
+    /** Reads the op that provably reflects the state (RUN_IN_BACKGROUND). */
+    public static String getSuppressGmsAlarmsProbeCmd() {
+        return "cmd appops get com.google.android.gms RUN_IN_BACKGROUND 2>/dev/null | head -1";
+    }
+
     public static String getSuppressJsIdleCmd(boolean enable) {
         if (enable) {
-            return "cmd jobscheduler cancel-all cn.wps.moffice_eng 2>/dev/null; " +
-                "cmd jobscheduler cancel-all org.koreader.launcher 2>/dev/null; " +
+            return "cmd jobscheduler cancel cn.wps.moffice_eng 2>/dev/null; " +
+                "cmd jobscheduler cancel org.koreader.launcher 2>/dev/null; " +
                 "device_config put jobscheduler min_ready_non_active_jobs_count 99 2>/dev/null; " +
                 "settings put global job_scheduler_constants min_ready_non_active_jobs_count=99 2>/dev/null";
         } else {

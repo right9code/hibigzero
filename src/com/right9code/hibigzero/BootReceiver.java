@@ -149,9 +149,10 @@ public class BootReceiver extends BroadcastReceiver {
         //    device ended up with 0 min of deep idle while `idle_to` said 24 h.
         ShellUtils.execRoot(ConfigManager.getAggressiveDozeCmd(
             "1".equals(cfg.getProperty("AGGRESSIVE_DOZE"))));
-        // 8. Suppress Alarms
+        // 8. Suppress GMS alarms. The old command set ALARM_WAKEUP, which does
+        //    not exist on API 34, so this was a silent no-op every boot.
         if ("1".equals(cfg.getProperty("SUPPRESS_ALARMS"))) {
-            ShellUtils.execRoot("cmd appops set com.google.android.gms ALARM_WAKEUP ignore 2>/dev/null");
+            ShellUtils.execRoot(ConfigManager.getSuppressGmsAlarmsCmd(true));
         }
         // 9. Kernel & Sensor
         if ("1".equals(cfg.getProperty("KERNEL_SENSOR"))) {
@@ -167,6 +168,12 @@ public class BootReceiver extends BroadcastReceiver {
         String govProfile = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         String hotplug4   = cfg.getProperty("HOTPLUG_4_CORES", "0");
         ShellUtils.execRoot(ConfigManager.buildGovernorCmd(govProfile, hotplug4));
+
+        // 10b. CPU uncap. Own key now (it used to overwrite GOVERNOR_PROFILE with
+        //      "1"). Applied after the profile so it clears any stale PPM clamp.
+        if ("1".equals(cfg.getProperty("CPU_OPTIMIZER"))) {
+            ShellUtils.execRoot(ConfigManager.getCpuUncapCmd());
+        }
 
         // 11. Sleep Governor Service (screen-off CPU frequency scaling)
         if ("1".equals(cfg.getProperty("SLEEP_GOVERNOR_ENABLED", "1"))) {

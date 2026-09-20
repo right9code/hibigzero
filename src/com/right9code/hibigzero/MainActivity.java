@@ -670,12 +670,14 @@ public class MainActivity extends Activity {
             "cmd appops get com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND 2>/dev/null | head -1",
             logDrawer);
 
+        // ALARM_WAKEUP does not exist on API 34, so this toggle used to do
+        // nothing at all. Now it uses ops that exist (verified on device).
         addToggle("SUPPRESS_ALARMS", "SUPPRESS_ALARMS",
-            "Block GMS alarm wakeups & background scheduling",
+            "Deny GMS exact alarms, background execution & wake locks",
             false,
-            "cmd appops set com.google.android.gms ALARM_WAKEUP ignore 2>/dev/null",
-            "cmd appops set com.google.android.gms ALARM_WAKEUP allow 2>/dev/null",
-            "cmd appops get com.google.android.gms ALARM_WAKEUP 2>/dev/null | head -1",
+            ConfigManager.getSuppressGmsAlarmsCmd(true),
+            ConfigManager.getSuppressGmsAlarmsCmd(false),
+            ConfigManager.getSuppressGmsAlarmsProbeCmd(),
             logDrawer);
 
         addToggle("WIFI_SLEEP", "WIFI_SLEEP_ZERO",
@@ -689,12 +691,14 @@ public class MainActivity extends Activity {
         // ── Section: POWER ─────────────────────────────────────────────────
         addSectionHeader("POWER");
 
-        addToggle("CPU_OPTIMIZER", "GOVERNOR_PROFILE",
-            "Uncap MediaTek PPM 2.06GHz lock & enable dynamic CPU scaling",
+        // Own config key: this used to write "1"/"0" into GOVERNOR_PROFILE, which
+        // clobbered the wake/sleep profile name chosen below.
+        addToggle("CPU_OPTIMIZER", "CPU_OPTIMIZER",
+            "Let the little cluster reach full 2.2GHz dynamically (clears the PPM hard limit)",
             false,
-            ConfigManager.buildGovernorCmd(currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient")),
+            ConfigManager.getCpuUncapCmd(),
             ConfigManager.buildGovernorCmd("stock"),
-            "cat /proc/ppm/policy_status 2>/dev/null | grep -q 'PPM_POLICY_USER_LIMIT: enabled' && echo 'LOCKED_2.06G' || echo 'UNCAPPED_DYNAMIC'",
+            ConfigManager.getCpuUncapProbeCmd(),
             logDrawer);
 
         // ── WAKE GOVERNOR selector (screen-on profile)

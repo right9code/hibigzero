@@ -207,11 +207,65 @@ public class ConfigManager {
         PKG_DESCRIPTIONS.put("com.mediatek.capctrl.service", "MediaTek capture control service");
     }
 
+    /**
+     * A package name, as this app is willing to put one into a root command.
+     *
+     * Every package name here ends up inside a {@code su -c} command, and some of
+     * them are read back from hibreak.conf, which lives in /data/local/tmp - a
+     * world-writable directory. That makes the name attacker-controlled input as
+     * far as the shell is concerned: a value containing ';', '$(...)', a backtick
+     * or a newline would execute as root on the next boot rule pass. The shape
+     * below is deliberately loose (OEM images ship odd names, and the framework
+     * package is just "android") but it admits no shell metacharacter, no
+     * whitespace, and no leading '-' that could be mistaken for a flag.
+     */
+    private static final java.util.regex.Pattern PACKAGE_NAME =
+        java.util.regex.Pattern.compile("^[A-Za-z0-9_][A-Za-z0-9_.]{0,254}$");
+
+    public static boolean isValidPackageName(String pkg) {
+        return pkg != null && PACKAGE_NAME.matcher(pkg.trim()).matches();
+    }
+
+    /** Governor profiles the app knows how to build. The marker file is written
+     *  from a config value, so an unknown profile is refused rather than quoted
+     *  into a root command. */
+    private static final Set<String> GOVERNOR_PROFILES = new HashSet<>(Arrays.asList(
+        "schedutil_efficient", "balanced", "ereader_battery", "deep_sleep", "stock"));
+
+    public static boolean isValidGovernorProfile(String profile) {
+        return profile != null && GOVERNOR_PROFILES.contains(profile.trim());
+    }
+
+    /**
+     * Ownership/permission tail for a file root writes but this app reads back
+     * (the config, the frozen ledger, the active-governor marker).
+     *
+     * These files used to be chmod 666, because root owns them and the app has to
+     * read them. That is a bad trade: it lets any local app rewrite the package
+     * lists that this app feeds to su -c on every boot. Handing the file to our
+     * own uid with 0600 keeps the app's access and removes everyone else's; if the
+     * chown is refused we fall back to 0644, which still cannot be tampered with
+     * by a non-root process.
+     */
+    public static String secureFileTail(String path) {
+        String uid;
+        try {
+            uid = String.valueOf(android.os.Process.myUid());
+        } catch (Throwable t) {
+            return " 2>/dev/null; chmod 644 " + path + " 2>/dev/null";
+        }
+        return " && (chown " + uid + " " + path + " 2>/dev/null && chmod 600 " + path +
+               " 2>/dev/null || chmod 644 " + path + " 2>/dev/null)";
+    }
+
     public static String buildPmCmd(String pkgList, boolean freeze) {
         String action = freeze ? "pm disable-user --user 0 " : "pm enable ";
         Set<String> pkgs = new HashSet<>();
         for (String p : pkgList.trim().split("\\s+")) {
-            if (!p.isEmpty()) pkgs.add(p);
+            // Some categories take their list from the config file, so anything that
+            // is not a package name is dropped here rather than reaching the shell.
+            if (isValidPackageName(p)) pkgs.add(p);
+            else if (!p.isEmpty()) ShellUtils.appendLog("buildPmCmd: ignoring invalid package name: " + p);
         }
         if (freeze) {
             // Dynamically discover all packages that must never be frozen
@@ -230,11 +284,14 @@ public class ConfigManager {
 
     // ── Per-package selection helpers ─────────────────────────────────────
 
-    /** Split a space-separated package list into a clean array. */
+    /** Split a space-separated package list into a clean array, dropping anything
+     *  that is not a package name. Shared by the category builders and the UI, so
+     *  both see the same filtered set. */
     public static String[] splitPkgList(String pkgList) {
         List<String> result = new ArrayList<>();
         for (String p : pkgList.trim().split("\\s+")) {
-            if (!p.isEmpty()) result.add(p);
+            if (isValidPackageName(p)) result.add(p);
+            else if (!p.isEmpty()) ShellUtils.appendLog("splitPkgList: ignoring invalid package name: " + p);
         }
         return result.toArray(new String[0]);
     }
@@ -507,7 +564,7 @@ public class ConfigManager {
             // Write via root — Java FileWriter can't write to /data/local/tmp (owned by shell:shell)
             ShellUtils.CommandResult r = ShellUtils.execRoot(
                 "printf '" + sb.toString().replace("'", "'\\''") + "' > " + CONF_PATH +
-                " && chmod 666 " + CONF_PATH + " 2>/dev/null", false);
+                secureFileTail(CONF_PATH), false);
             if (!r.isSuccess()) {
                 ShellUtils.appendLog("saveConfig failed (exit=" + r.exitCode + "): " + r.stderr);
             }
@@ -592,7 +649,11 @@ public class ConfigManager {
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
-                if (!line.isEmpty() && !line.startsWith("#")) pkgs.add(line);
+                // The ledger is read back from a root-written file, so a line that is
+                // not a package name is dropped before it can reach a command.
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                if (isValidPackageName(line)) pkgs.add(line);
+                else ShellUtils.appendLog("loadFrozenLedger: ignoring invalid entry: " + line);
             }
         } catch (Exception ignored) {
         } finally {
@@ -606,7 +667,7 @@ public class ConfigManager {
         for (String pkg : pkgs) sb.append(pkg).append("\n");
         ShellUtils.execRoot(
             "printf '" + sb.toString().replace("'", "'\\''") + "' > " + FROZEN_LEDGER_PATH +
-            " && chmod 666 " + FROZEN_LEDGER_PATH + " 2>/dev/null", false);
+            secureFileTail(FROZEN_LEDGER_PATH), false);
     }
 
     /** Adds or removes a package from the ledger. Call after a successful freeze.
@@ -614,6 +675,10 @@ public class ConfigManager {
      *  them even if they somehow reach the ledger. */
     public static void recordFrozen(String pkg, boolean frozen) {
         try {
+            if (!isValidPackageName(pkg)) {
+                ShellUtils.appendLog("recordFrozen: ignoring invalid package name: " + pkg);
+                return;
+            }
             if (frozen && NEVER_UNFREEZE.contains(pkg)) return;
             Set<String> pkgs = loadFrozenLedger();
             boolean changed = frozen ? pkgs.add(pkg) : pkgs.remove(pkg);
@@ -641,9 +706,12 @@ public class ConfigManager {
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
-                if (!line.isEmpty() && !line.startsWith("#")) {
-                    pkgs.add(line);
-                }
+                // This file lives in a world-writable directory and every line in it
+                // is passed to buildRestrictCmd() at boot, so a line that is not a
+                // package name is dropped here as well as at the command builder.
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                if (isValidPackageName(line)) pkgs.add(line);
+                else ShellUtils.appendLog("loadRestrictedPkgs: ignoring invalid entry: " + line);
             }
             br.close();
         } catch (Exception ignored) {}
@@ -658,7 +726,7 @@ public class ConfigManager {
         // Write via root — Java FileWriter can't write to /data/local/tmp (owned by shell:shell)
         ShellUtils.execRoot(
             "printf '" + sb.toString().replace("'", "'\\''") + "' > " + RESTRICTED_PATH +
-            " && chmod 666 " + RESTRICTED_PATH + " 2>/dev/null", false);
+            secureFileTail(RESTRICTED_PATH), false);
     }
 
     // Only appops that actually exist on this platform are issued. The previous
@@ -682,6 +750,10 @@ public class ConfigManager {
     // as a side effect of restricting one package, unrestrict never undid it, and it
     // has nothing to do with restricting an app.
     public static String buildRestrictCmd(String pkg) {
+        if (!isValidPackageName(pkg)) {
+            ShellUtils.appendLog("buildRestrictCmd: refusing invalid package name: " + pkg);
+            return "";
+        }
         return "am force-stop " + pkg + " 2>/dev/null; " +
             "cmd appops set " + pkg + " RUN_IN_BACKGROUND ignore 2>/dev/null; " +
             "cmd appops set " + pkg + " RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; " +
@@ -693,6 +765,10 @@ public class ConfigManager {
     }
 
     public static String buildUnrestrictCmd(String pkg) {
+        if (!isValidPackageName(pkg)) {
+            ShellUtils.appendLog("buildUnrestrictCmd: refusing invalid package name: " + pkg);
+            return "";
+        }
         return "cmd appops set " + pkg + " RUN_IN_BACKGROUND allow 2>/dev/null; " +
             "cmd appops set " + pkg + " RUN_ANY_IN_BACKGROUND allow 2>/dev/null; " +
             "cmd appops set " + pkg + " WAKE_LOCK allow 2>/dev/null; " +
@@ -750,11 +826,24 @@ public class ConfigManager {
         return !s.contains("ignore");
     }
 
+    /** The standby buckets `am set-standby-bucket` accepts. Anything else is
+     *  refused rather than interpolated into the command. */
+    private static final Set<String> STANDBY_BUCKETS = new HashSet<>(Arrays.asList(
+        "active", "working_set", "frequent", "rare", "restricted", "never"));
+
     public static String buildSetStandbyBucketCmd(String pkg, String bucket) {
-        return "am set-standby-bucket " + pkg + " " + bucket + " 2>/dev/null";
+        if (!isValidPackageName(pkg) || bucket == null || !STANDBY_BUCKETS.contains(bucket.trim())) {
+            ShellUtils.appendLog("buildSetStandbyBucketCmd: refusing pkg=" + pkg + " bucket=" + bucket);
+            return "";
+        }
+        return "am set-standby-bucket " + pkg + " " + bucket.trim() + " 2>/dev/null";
     }
 
     public static String buildDozeWhitelistCmd(String pkg, boolean exempt) {
+        if (!isValidPackageName(pkg)) {
+            ShellUtils.appendLog("buildDozeWhitelistCmd: refusing invalid package name: " + pkg);
+            return "";
+        }
         if (exempt) {
             return "dumpsys deviceidle whitelist +" + pkg + " 2>/dev/null";
         } else {

@@ -71,7 +71,12 @@ public class ScreenReceiver extends BroadcastReceiver {
                         String cmd = ConfigManager.buildGovernorCmd(savedGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
                         ShellUtils.execRootAction(cmd);
-                        new File(ACTIVE_GOV_FILE).delete();
+                        // Removed via root, not File.delete(): /data/local/tmp is 0771 and
+                        // owned by shell, so this app has no write permission on the
+                        // directory and unlinking there fails even for a file it owns.
+                        // The old silent failure left the marker behind forever, which
+                        // made it useless as a "a clamp is currently applied" flag.
+                        ShellUtils.execRoot("rm -f " + ACTIVE_GOV_FILE, false);
                         Log.i("ScreenReceiver", "Wake governor restored");
                     }
                 } catch (Exception e) {
@@ -88,10 +93,15 @@ public class ScreenReceiver extends BroadcastReceiver {
     }
 
     private void saveActiveGov(String profile) {
-        // /data/local/tmp is not writable by the app UID — write via root and
-        // chmod 666 so readActiveGov() (running as the app) can read it back.
+        // /data/local/tmp is not writable by the app UID, so this is written via root
+        // and then handed to our own uid with 0600 (ConfigManager.secureFileTail) so
+        // readActiveGov(), running as the app, can still read it back.
+        if (!ConfigManager.isValidGovernorProfile(profile)) {
+            ShellUtils.appendLog("saveActiveGov: refusing invalid governor profile: " + profile);
+            return;
+        }
         ShellUtils.execRoot("printf '%s' '" + profile + "' > " + ACTIVE_GOV_FILE +
-            " && chmod 666 " + ACTIVE_GOV_FILE, false);
+            ConfigManager.secureFileTail(ACTIVE_GOV_FILE), false);
     }
 
     private String readActiveGov() {

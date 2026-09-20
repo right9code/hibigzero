@@ -12,6 +12,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.GestureDetector;
 import android.view.Gravity;
@@ -45,6 +46,11 @@ public class MainActivity extends Activity {
     private String debloatSearch = "";
     private Runnable searchDebounceRunnable = null;
     private List<AppItem> cachedAppItems = null;
+    // Rows are appended to the package list in slices of this size so one UI-thread
+    // task never carries the whole list (220 rows measured ~610 ms in a single pass).
+    private static final int DEBLOAT_ROWS_PER_CHUNK = 20;
+    // Bumped on every render; a chunk that wakes up with a stale value is dropped.
+    private int debloatRenderGeneration = 0;
     private boolean logDrawerVisible = false;
     private TextView logDrawerView = null;   // live log view, hosted in the banner popup
     private AlertDialog logDialog = null;    // currently-open log popup (if any)
@@ -2601,7 +2607,26 @@ public class MainActivity extends Activity {
         hdr.setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6));
         listContainer.addView(hdr);
 
-        for (final AppItem item : filtered) {
+        // Rows are added in chunks instead of one pass: building all 220 in a single
+        // UI-thread task measured ~610 ms here, which froze the tab the whole time.
+        // Each chunk is its own task, so taps and scrolling keep working while the
+        // rest stream in. Rows that land below the fold do not change the visible
+        // area, so this costs no extra e-ink refreshes.
+        final int generation = ++debloatRenderGeneration;
+        renderDebloatChunk(listContainer, pm, protected_pkgs, filtered, 0, generation);
+    }
+
+    // Builds one slice of rows, then re-posts itself for the next slice.
+    private void renderDebloatChunk(final LinearLayout listContainer, final PackageManager pm,
+                                    final List<String> protected_pkgs, final List<AppItem> filtered,
+                                    final int start, final int generation) {
+        // A tab switch, filter or search change supersedes this render.
+        if (generation != debloatRenderGeneration || activeTab != 1) return;
+
+        final int end = Math.min(start + DEBLOAT_ROWS_PER_CHUNK, filtered.size());
+        long chunkStart = System.currentTimeMillis();
+        for (int index = start; index < end; index++) {
+            final AppItem item = filtered.get(index);
             final String pkg = item.pkg;
             final boolean isProt = item.isProt;
 
@@ -2736,6 +2761,20 @@ public class MainActivity extends Activity {
             });
 
             listContainer.addView(row);
+        }
+
+        Log.i("MainActivity", "debloat list: rows " + start + "-" + end + " of "
+            + filtered.size() + " built in " + (System.currentTimeMillis() - chunkStart) + " ms");
+
+        // Hand the next slice back to the looper, so anything the user taps in the
+        // meantime is processed first.
+        if (end < filtered.size()) {
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    renderDebloatChunk(listContainer, pm, protected_pkgs, filtered, end, generation);
+                }
+            });
         }
     }
 

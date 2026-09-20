@@ -94,6 +94,15 @@ public class ChargeLimitController {
     public static void onPowerEvent(Context ctx, boolean plugged) {
         final Context app = ctx.getApplicationContext();
         refreshConfig(app);
+        // Dry run: leave the switch completely alone. Toggling it here would be a
+        // device change, which is the one thing dry-run promises not to do. What the
+        // card reports comes from reading the node, so it stays truthful either way.
+        if (ConfigManager.isDryRun()) {
+            cancelTick(app);
+            ShellUtils.appendLog("Charge limit: DRY-RUN - charging switch left untouched");
+            Log.i(TAG, "dry run: charging switch left untouched");
+            return;
+        }
         if (!plugged) {
             // Charging must work again the moment the cable comes out.
             holding = false;
@@ -128,6 +137,11 @@ public class ChargeLimitController {
     public static void onTick(Context ctx) {
         final Context app = ctx.getApplicationContext();
         refreshConfig(app);
+        if (ConfigManager.isDryRun()) {
+            cancelTick(app);
+            Log.i(TAG, "tick: dry run, nothing to do");
+            return;
+        }
         if (!enabled || !isPlugged(app)) {
             cancelTick(app);
             Log.i(TAG, "tick: stopping poll (enabled=" + enabled + ")");
@@ -145,6 +159,13 @@ public class ChargeLimitController {
     public static void applyConfig(Context ctx) {
         final Context app = ctx.getApplicationContext();
         refreshConfig(app);
+        if (ConfigManager.isDryRun()) {
+            cancelTick(app);
+            note("dry run - charging switch left untouched");
+            ShellUtils.appendLog("Charge limit: DRY-RUN - charging switch left untouched");
+            Log.i(TAG, "applyConfig: dry run, charging switch left untouched");
+            return;
+        }
         if (!enabled) {
             cancelTick(app);
             holding = false;
@@ -254,6 +275,9 @@ public class ChargeLimitController {
         int level = batteryLevel(ctx);
         String lvl = level < 0 ? "?" : level + "%";
 
+        if (ConfigManager.isDryRun()) {
+            return "DRY RUN - charging switch left untouched (target " + target + "%)";
+        }
         if (!isPlugged(ctx)) {
             return "ON BATTERY - charging restored, waiting for a charger";
         }

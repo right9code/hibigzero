@@ -33,7 +33,7 @@ public class BootReceiver extends BroadcastReceiver {
         // 0. Self-protection — the manager must never be background-restricted by
         //    its own rules, or Android reaps it minutes after screen-off and every
         //    rule applied below loses its owner. Idempotent, single root spawn.
-        ShellUtils.execRoot(ConfigManager.buildSelfCheckAndFixCmd());
+        ShellUtils.execRootAction(ConfigManager.buildSelfCheckAndFixCmd());
 
         // 1. Fix UART - passive monitor with fallback
         if ("1".equals(cfg.getProperty("FIX_UART"))) {
@@ -43,10 +43,10 @@ public class BootReceiver extends BroadcastReceiver {
             } else {
                 ShellUtils.appendLog("uart2serport status: " + svcStatus + " — applying fallback");
                 // Inject SELinux rule so the sleep stub can execute
-                ShellUtils.execRoot(
+                ShellUtils.execRootAction(
                     "magiskpolicy --live \"allow uart2serport toolbox_exec file { read open getattr execute execute_no_trans map }\" 2>/dev/null");
                 // Bind-mount sleep stub over system script
-                ShellUtils.execRoot(
+                ShellUtils.execRootAction(
                     "mkdir -p /data/local/tmp/uart_fix && " +
                     "echo '#!/system/bin/sh' > /data/local/tmp/uart_fix/stub.sh && " +
                     "echo 'exec sleep 2147483647' >> /data/local/tmp/uart_fix/stub.sh && " +
@@ -54,13 +54,13 @@ public class BootReceiver extends BroadcastReceiver {
                     "chcon u:object_r:system_file:s0 /data/local/tmp/uart_fix/stub.sh && " +
                     "mount -o bind /data/local/tmp/uart_fix/stub.sh /system/bin/start_uart2serport.sh 2>/dev/null");
                 // Restart service into running state
-                ShellUtils.execRoot("setprop ctl.restart uart2serport");
+                ShellUtils.execRootAction("setprop ctl.restart uart2serport");
             }
         }
         // 2. Google Stack (respect per-package selection)
         if ("0".equals(cfg.getProperty("GOOGLE_STACK"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
         } else {
             // OFF must undo exactly what ON did - the selected set - rather than
             // re-enabling the whole category, which could undo freezes applied
@@ -73,13 +73,13 @@ public class BootReceiver extends BroadcastReceiver {
             // four root spawns for nothing.
             if (!cfg.getProperty("GOOGLE_PKGS_SEL", "").trim().isEmpty()) {
                 String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
             }
         }
         // 3. Bigme Bloat (respect per-package selection)
         if ("0".equals(cfg.getProperty("BIGME_BLOAT"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
         } else {
             // OFF must undo exactly what ON did - the selected set - rather than
             // re-enabling the whole category, which could undo freezes applied
@@ -92,13 +92,13 @@ public class BootReceiver extends BroadcastReceiver {
             // four root spawns for nothing.
             if (!cfg.getProperty("BIGME_PKGS_SEL", "").trim().isEmpty()) {
                 String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
             }
         }
         // 4. MTK Cellular (respect per-package selection)
         if ("0".equals(cfg.getProperty("MTK_CELLULAR"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
         } else {
             // OFF must undo exactly what ON did - the selected set - rather than
             // re-enabling the whole category, which could undo freezes applied
@@ -111,13 +111,13 @@ public class BootReceiver extends BroadcastReceiver {
             // four root spawns for nothing.
             if (!cfg.getProperty("MTK_PKGS_SEL", "").trim().isEmpty()) {
                 String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
             }
         }
         // 5. AOSP Stubs (respect per-package selection)
         if ("0".equals(cfg.getProperty("AOSP_STUBS"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
         } else {
             // OFF must undo exactly what ON did - the selected set - rather than
             // re-enabling the whole category, which could undo freezes applied
@@ -130,12 +130,12 @@ public class BootReceiver extends BroadcastReceiver {
             // four root spawns for nothing.
             if (!cfg.getProperty("AOSP_PKGS_SEL", "").trim().isEmpty()) {
                 String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
             }
         }
         // 6. GBoard Lockdown
         if ("1".equals(cfg.getProperty("LOCKDOWN_GBOARD"))) {
-            ShellUtils.execRoot(
+            ShellUtils.execRootAction(
                 "cmd appops set com.google.android.inputmethod.latin RUN_IN_BACKGROUND ignore 2>/dev/null; " +
                 "cmd appops set com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; " +
                 "cmd appops set com.google.android.inputmethod.latin START_FOREGROUND ignore 2>/dev/null; " +
@@ -147,16 +147,16 @@ public class BootReceiver extends BroadcastReceiver {
         // 7. Doze: ON shortens the entry times, OFF restores normal doze. Never
         //    leave doze disabled — the old OFF branch did exactly that and the
         //    device ended up with 0 min of deep idle while `idle_to` said 24 h.
-        ShellUtils.execRoot(ConfigManager.getAggressiveDozeCmd(
+        ShellUtils.execRootAction(ConfigManager.getAggressiveDozeCmd(
             "1".equals(cfg.getProperty("AGGRESSIVE_DOZE"))));
         // 8. Suppress GMS alarms. The old command set ALARM_WAKEUP, which does
         //    not exist on API 34, so this was a silent no-op every boot.
         if ("1".equals(cfg.getProperty("SUPPRESS_ALARMS"))) {
-            ShellUtils.execRoot(ConfigManager.getSuppressGmsAlarmsCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getSuppressGmsAlarmsCmd(true));
         }
         // 9. Kernel & Sensor
         if ("1".equals(cfg.getProperty("KERNEL_SENSOR"))) {
-            ShellUtils.execRoot("settings put system accelerometer_rotation 0 2>/dev/null; " +
+            ShellUtils.execRootAction("settings put system accelerometer_rotation 0 2>/dev/null; " +
                 "settings put system user_rotation 0 2>/dev/null; " +
                 "device_config put power face_down_detector_enabled false 2>/dev/null; " +
                 "echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null; " +
@@ -167,12 +167,12 @@ public class BootReceiver extends BroadcastReceiver {
         // 10. Governor Profile & PPM Uncap
         String govProfile = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         String hotplug4   = cfg.getProperty("HOTPLUG_4_CORES", "0");
-        ShellUtils.execRoot(ConfigManager.buildGovernorCmd(govProfile, hotplug4));
+        ShellUtils.execRootAction(ConfigManager.buildGovernorCmd(govProfile, hotplug4));
 
         // 10b. CPU uncap. Own key now (it used to overwrite GOVERNOR_PROFILE with
         //      "1"). Applied after the profile so it clears any stale PPM clamp.
         if ("1".equals(cfg.getProperty("CPU_OPTIMIZER"))) {
-            ShellUtils.execRoot(ConfigManager.getCpuUncapCmd());
+            ShellUtils.execRootAction(ConfigManager.getCpuUncapCmd());
         }
 
         // 11. Sleep Governor Service (screen-off CPU frequency scaling)
@@ -182,7 +182,7 @@ public class BootReceiver extends BroadcastReceiver {
 
         // 12. WiFi Sleep Zero
         if ("1".equals(cfg.getProperty("WIFI_SLEEP_ZERO"))) {
-            ShellUtils.execRoot("settings put global wifi_sleep_policy 0 2>/dev/null; " +
+            ShellUtils.execRootAction("settings put global wifi_sleep_policy 0 2>/dev/null; " +
                 "settings put global wifi_idle_ms 5000 2>/dev/null; " +
                 "settings put global wifi_scan_always_enabled 0 2>/dev/null; " +
                 "cmd wifi set-scan-always-available 0 2>/dev/null");
@@ -194,7 +194,7 @@ public class BootReceiver extends BroadcastReceiver {
         ChargeLimitController.applyConfig(context);
         // 14. Animations
         if ("1".equals(cfg.getProperty("DISABLE_ANIMATIONS"))) {
-            ShellUtils.execRoot("settings put global window_animation_scale 0.0 2>/dev/null; " +
+            ShellUtils.execRootAction("settings put global window_animation_scale 0.0 2>/dev/null; " +
                 "settings put global transition_animation_scale 0.0 2>/dev/null; " +
                 "settings put global animator_duration_scale 0.0 2>/dev/null; " +
                 "settings put global disable_window_blurs 1 2>/dev/null; " +
@@ -205,7 +205,7 @@ public class BootReceiver extends BroadcastReceiver {
             // Our timer is the single authority for power-off, so Bigme's own
             // PowersaveShutDownAlarmReceiver is re-disabled on every boot - that way
             // an OTA or firmware reset that restores it gets corrected here.
-            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(true));
             ShutdownAlarmReceiver.scheduleAlarmWithConfig(context);
             ShellUtils.appendLog("auto-shutdown armed at boot (Bigme timer disabled)");
         } else {
@@ -213,21 +213,21 @@ public class BootReceiver extends BroadcastReceiver {
         }
         // 16. Suspend failure reduction (Optimization #3)
         if ("1".equals(cfg.getProperty("KILL_SHUTDOWN_ALARM"))) {
-            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(true));
         }
         if ("1".equals(cfg.getProperty("SUPPRESS_JS_IDLE"))) {
-            ShellUtils.execRoot(ConfigManager.getSuppressJsIdleCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getSuppressJsIdleCmd(true));
         }
         if ("1".equals(cfg.getProperty("WIDE_ALARM_FUZZ"))) {
-            ShellUtils.execRoot(ConfigManager.getWideAlarmFuzzCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getWideAlarmFuzzCmd(true));
         }
         if ("1".equals(cfg.getProperty("INSTANT_LOCK"))) {
-            ShellUtils.execRoot(ConfigManager.getInstantLockCmd(true));
+            ShellUtils.execRootAction(ConfigManager.getInstantLockCmd(true));
         }
         // 17. Reapply user restricted packages (AppOps & Standby Buckets)
         java.util.Set<String> restricted = ConfigManager.loadRestrictedPkgs();
         for (String rPkg : restricted) {
-            ShellUtils.execRoot(ConfigManager.buildRestrictCmd(rPkg));
+            ShellUtils.execRootAction(ConfigManager.buildRestrictCmd(rPkg));
         }
         ShellUtils.appendLog("=== BootReceiver: all rules applied ===");
     }

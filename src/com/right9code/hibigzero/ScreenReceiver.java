@@ -43,11 +43,11 @@ public class ScreenReceiver extends BroadcastReceiver {
                         try { Thread.sleep(250); } catch (InterruptedException ignored) {}
                         String cmd = ConfigManager.buildGovernorCmd(sleepGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
-                        ShellUtils.execRoot(cmd);
+                        ShellUtils.execRootAction(cmd);
                         Log.i("ScreenReceiver", "Sleep governor applied via PPM hard_userlimit");
                         // Force-stop Gboard on screen-off to kill WorkManager wakelocks
                         if ("1".equals(cfg.getProperty("LOCKDOWN_GBOARD"))) {
-                            ShellUtils.execRoot("am force-stop com.google.android.inputmethod.latin 2>/dev/null");
+                            ShellUtils.execRootAction("am force-stop com.google.android.inputmethod.latin 2>/dev/null");
                             Log.i("ScreenReceiver", "Gboard force-stopped on screen-off");
                         }
                         // Schedule auto-shutdown alarm (zero-drain, AlarmManager-based)
@@ -70,7 +70,7 @@ public class ScreenReceiver extends BroadcastReceiver {
                         Log.i("ScreenReceiver", "Screen ON: restoring gov=" + savedGov);
                         String cmd = ConfigManager.buildGovernorCmd(savedGov, hotplug4);
                         Log.i("ScreenReceiver", "Executing: " + cmd.substring(0, Math.min(cmd.length(), 100)));
-                        ShellUtils.execRoot(cmd);
+                        ShellUtils.execRootAction(cmd);
                         new File(ACTIVE_GOV_FILE).delete();
                         Log.i("ScreenReceiver", "Wake governor restored");
                     }

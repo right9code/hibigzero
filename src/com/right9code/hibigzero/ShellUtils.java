@@ -54,6 +54,31 @@ public class ShellUtils {
         return r;
     }
 
+    /**
+     * Runs a STATE-CHANGING root command, unless DRY_RUN is on - in which case the
+     * command is recorded and skipped, and nothing is touched.
+     *
+     * Call this for anything that alters the device (appops, settings, pm, sysfs
+     * writes, reboots). Read-only status probes keep using execRoot() directly, so
+     * cards still report real values while dry-run is enabled.
+     *
+     * The simulated result reports success with the dry-run marker as its stdout, so
+     * the "[OK: ...]" labels in the UI describe the plan rather than a false success.
+     */
+    public static CommandResult execRootAction(String command) {
+        return execRootAction(command, true);
+    }
+
+    public static CommandResult execRootAction(String command, boolean log) {
+        if (ConfigManager.isDryRun()) {
+            String preview = command.replace("\n", " ; ");
+            if (preview.length() > 90) preview = preview.substring(0, 90) + "...";
+            if (log) appendLog(ConfigManager.DRY_TAG + preview + " [not applied]");
+            return new CommandResult(0, ConfigManager.DRY_TAG + "apply", "");
+        }
+        return execRoot(command, log);
+    }
+
     public static CommandResult exec(String command) {
         StringBuilder stdout = new StringBuilder();
         StringBuilder stderr = new StringBuilder();

@@ -23,7 +23,7 @@ public class ConfigManager {
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
         "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
         "KILL_SHUTDOWN_ALARM","SUPPRESS_JS_IDLE","WIDE_ALARM_FUZZ","INSTANT_LOCK",
-        "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL"
+        "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL","DRY_RUN"
     };
 
     public static final String GOOGLE_PKGS =
@@ -468,6 +468,10 @@ public class ConfigManager {
         p.setProperty("AUTO_SHUTDOWN_SKIP_WHEN_CHARGING", "1");
         // "1" logs the shutdown decision instead of performing it (safe testing).
         p.setProperty("AUTO_SHUTDOWN_DRY_RUN", "0");
+        // Global "plan, don't act": state-changing operations are logged instead of
+        // applied, so a whole rule set can be rehearsed. Read-only probes still run,
+        // so every card keeps showing the real current state.
+        p.setProperty("DRY_RUN", "0");
         p.setProperty("DISABLE_ANIMATIONS", "0");
         p.setProperty("KILL_SHUTDOWN_ALARM", "0");
         p.setProperty("SUPPRESS_JS_IDLE", "0");
@@ -509,6 +513,30 @@ public class ConfigManager {
             }
         } catch (Exception e) {
             ShellUtils.appendLog("saveConfig error: " + e.getMessage());
+        }
+    }
+
+    // ── Dry-run (DRY_RUN) ────────────────────────────────────────────────
+    // Global "plan, don't act". Every state-changing operation consults this, so a
+    // whole rule set can be rehearsed without touching the device.
+    //
+    // The gate sits at the point of application instead of inside execRoot(): about
+    // a third of the root calls are read-only probes (dumpsys, cat, getprop), and
+    // the cards depend on those still returning real values while dry-run is on.
+    // Gating execRoot() would have blanked every status card, which is exactly the
+    // kind of lying this app is being cleaned of.
+    //
+    // It re-reads the file on every check rather than caching. loadConfig() is a
+    // plain ~30-line file read with no root spawn, and reading the same source of
+    // truth as the gate is what stops the UI and the gate drifting apart.
+    public static final String DRY_TAG = "[DRY-RUN] would ";
+
+    public static boolean isDryRun() {
+        try {
+            return "1".equals(loadConfig().getProperty("DRY_RUN", "0").trim());
+        } catch (Throwable t) {
+            return false;   // if the flag cannot be read, behave normally rather than
+                            // silently doing nothing
         }
     }
 

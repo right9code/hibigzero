@@ -34,6 +34,8 @@ public class MainActivity extends Activity {
     private int activeTab = 0;
     private Handler mainHandler = new Handler(Looper.getMainLooper());
     private TextView headerBatteryView;
+    // Banner mode marker: shows DRY RUN when nothing is being applied.
+    private TextView authorView;
     private Runnable headerBatteryUpdater;
 
     /** HiBreak Li-ion pack capacity per spec sheet (used for runtime projections). */
@@ -226,12 +228,14 @@ public class MainActivity extends Activity {
         header.addView(headerTop);
 
         TextView author = new TextView(this);
+        authorView = author;
         author.setText("by right9code");
         setSp(author, 11);
         author.setTypeface(Typeface.DEFAULT);
         author.setTextColor(Color.WHITE);
         author.setPadding(0, dpToPx(1), 0, 0);
         header.addView(author);
+        updateDryRunBadge();
 
         headerBatteryView = new TextView(this);
         headerBatteryView.setText("Battery: reading...");
@@ -613,9 +617,9 @@ public class MainActivity extends Activity {
                         @Override
                         public void run() {
                             if (wasEnabled) {
-                                ShellUtils.execRoot("pm disable-user --user 0 " + capPkg);
+                                ShellUtils.execRootAction("pm disable-user --user 0 " + capPkg);
                             } else {
-                                ShellUtils.execRoot("pm enable " + capPkg);
+                                ShellUtils.execRootAction("pm enable " + capPkg);
                             }
                             mainHandler.post(new Runnable() {
                                 @Override
@@ -767,7 +771,7 @@ public class MainActivity extends Activity {
                                 "ereader_battery".equals(selected) ? "1" : "0");
                             ConfigManager.saveConfig(currentConfig);
                             wakeVal.setText(ConfigManager.getGovernorLabel(selected));
-                            ShellUtils.execRoot(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
+                            ShellUtils.execRootAction(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
                             ShellUtils.appendLog("Wake Governor set to: " + selected);
                             if (logDrawer.getVisibility() == View.VISIBLE) {
                                 logDrawer.setText(ShellUtils.readLog(15));
@@ -998,7 +1002,7 @@ public class MainActivity extends Activity {
                         if (!"1".equals(currentConfig.getProperty("KILL_SHUTDOWN_ALARM", "0"))) {
                             currentConfig.setProperty("KILL_SHUTDOWN_ALARM", "1");
                             ConfigManager.saveConfig(currentConfig);
-                            ShellUtils.execRoot(ConfigManager.getKillShutdownAlarmCmd(true));
+                            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(true));
                             ShellUtils.appendLog("Auto-shutdown ON -> Bigme's own timer disabled");
                         }
                         ShutdownAlarmReceiver.scheduleAlarmWithConfig(MainActivity.this);
@@ -1143,6 +1147,26 @@ public class MainActivity extends Activity {
             "settings get secure lock_screen_lock_after_timeout | grep -q 0 && echo INSTANT || echo DELAYED",
             logDrawer);
 
+        // ── DRY RUN (global): plan-only mode ────────────────────────────────
+        // Deliberately grouped with the SHUTDOWN_TEST_MODE toggle above, which
+        // already established "test mode" as a concept in this app. Unlike that
+        // one, this covers every state-changing action, so APPLY ALL can be
+        // rehearsed in full.
+        addToggle("DRY_RUN", "DRY_RUN",
+            "Plan-only mode: every state-changing action is logged instead of "
+                + "applied, so a whole rule set can be rehearsed safely. Status "
+                + "cards still read the real device state.",
+            false,
+            "", "",
+            ConfigManager.getConfigProbeCmd("DRY_RUN", "NOTHING APPLIED", "LIVE"),
+            logDrawer,
+            new Runnable() {
+                @Override
+                public void run() {
+                    updateDryRunBadge();
+                }
+            });
+
         // ── APPLY ALL button (with confirmation dialog) ─────────────────────
         final Button applyBtn = new Button(this);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1194,6 +1218,19 @@ public class MainActivity extends Activity {
 
         // ── APPLY ALL (pinned to the very bottom of the SYSTEM tab) ──────
         addSectionContent(applyBtn);
+    }
+
+    // ── DRY RUN banner marker ──────────────────────────────────────────────
+    /**
+     * Puts the plan-only mode into the banner. A mode that silently changes what
+     * every button does must be visible at a glance, or it will be left on and every
+     * rule will look like it stopped working.
+     */
+    private void updateDryRunBadge() {
+        if (authorView == null) return;
+        authorView.setText(ConfigManager.isDryRun()
+            ? "by right9code    [ DRY RUN - NOTHING APPLIED ]"
+            : "by right9code");
     }
 
     // ── PROTECTION card: check + self-repair, battery-first ────────────────
@@ -1625,7 +1662,7 @@ public class MainActivity extends Activity {
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            ShellUtils.CommandResult res = ShellUtils.execRoot(cmd);
+                            ShellUtils.CommandResult res = ShellUtils.execRootAction(cmd);
                             String verResult = "";
                             if (verifyCmd != null && !verifyCmd.isEmpty()) {
                                 verResult = ShellUtils.execRoot(verifyCmd).stdout.trim();
@@ -1964,7 +2001,7 @@ public class MainActivity extends Activity {
                         new Thread(new Runnable() {
                             @Override
                             public void run() {
-                                ShellUtils.CommandResult res = ShellUtils.execRoot(freezeCmd);
+                                ShellUtils.CommandResult res = ShellUtils.execRootAction(freezeCmd);
                                 String verResult = "";
                                 if (verifyCmd != null && !verifyCmd.isEmpty()) {
                                     verResult = ShellUtils.execRoot(verifyCmd).stdout.trim();
@@ -1990,7 +2027,7 @@ public class MainActivity extends Activity {
                         new Thread(new Runnable() {
                             @Override
                             public void run() {
-                                ShellUtils.CommandResult res = ShellUtils.execRoot(unfreezeCmd);
+                                ShellUtils.CommandResult res = ShellUtils.execRootAction(unfreezeCmd);
                                 String verResult = "";
                                 if (verifyCmd != null && !verifyCmd.isEmpty()) {
                                     verResult = ShellUtils.execRoot(verifyCmd).stdout.trim();
@@ -2298,7 +2335,7 @@ public class MainActivity extends Activity {
             .setPositiveButton("REBOOT", new DialogInterface.OnClickListener() {
                 @Override
                 public void onClick(DialogInterface d, int which) {
-                    ShellUtils.execRoot("svc power reboot");
+                    ShellUtils.execRootAction("svc power reboot");
                 }
             })
             .setNegativeButton("LATER", null)
@@ -2810,9 +2847,9 @@ public class MainActivity extends Activity {
                             @Override
                             public void run() {
                                 if (!targetEnabled) {
-                                    ShellUtils.execRoot("pm disable-user --user 0 " + pkg + " 2>/dev/null");
+                                    ShellUtils.execRootAction("pm disable-user --user 0 " + pkg + " 2>/dev/null");
                                 } else {
-                                    ShellUtils.execRoot("pm enable " + pkg + " 2>/dev/null");
+                                    ShellUtils.execRootAction("pm enable " + pkg + " 2>/dev/null");
                                 }
                                 mainHandler.post(new Runnable() {
                                     @Override
@@ -2943,9 +2980,9 @@ public class MainActivity extends Activity {
                     @Override
                     public void run() {
                         if (item.isEnabled) {
-                            ShellUtils.execRoot("pm disable-user --user 0 " + pkg + " 2>/dev/null");
+                            ShellUtils.execRootAction("pm disable-user --user 0 " + pkg + " 2>/dev/null");
                         } else {
-                            ShellUtils.execRoot("pm enable " + pkg + " 2>/dev/null");
+                            ShellUtils.execRootAction("pm enable " + pkg + " 2>/dev/null");
                         }
                         item.isEnabled = !item.isEnabled;
                         mainHandler.post(new Runnable() {
@@ -2966,10 +3003,10 @@ public class MainActivity extends Activity {
                     public void run() {
                         java.util.Set<String> restricted = ConfigManager.loadRestrictedPkgs();
                         if (item.isRestricted) {
-                            ShellUtils.execRoot(ConfigManager.buildUnrestrictCmd(pkg));
+                            ShellUtils.execRootAction(ConfigManager.buildUnrestrictCmd(pkg));
                             restricted.remove(pkg);
                         } else {
-                            ShellUtils.execRoot(ConfigManager.buildRestrictCmd(pkg));
+                            ShellUtils.execRootAction(ConfigManager.buildRestrictCmd(pkg));
                             restricted.add(pkg);
                         }
                         ConfigManager.saveRestrictedPkgs(restricted);
@@ -2995,7 +3032,7 @@ public class MainActivity extends Activity {
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
-                        ShellUtils.execRoot(ConfigManager.buildDozeWhitelistCmd(pkg, !item.isDozeExempt));
+                        ShellUtils.execRootAction(ConfigManager.buildDozeWhitelistCmd(pkg, !item.isDozeExempt));
                         item.isDozeExempt = !item.isDozeExempt;
                         mainHandler.post(new Runnable() {
                             @Override
@@ -3013,7 +3050,7 @@ public class MainActivity extends Activity {
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            ShellUtils.execRoot("pm enable " + pkg + " 2>/dev/null");
+                            ShellUtils.execRootAction("pm enable " + pkg + " 2>/dev/null");
                             Intent launch = pm.getLaunchIntentForPackage(pkg);
                             if (launch != null) startActivity(launch);
                             mainHandler.post(new Runnable() {
@@ -3029,7 +3066,7 @@ public class MainActivity extends Activity {
                                                 new Thread(new Runnable() {
                                                     @Override
                                                     public void run() {
-                                                        ShellUtils.execRoot("am force-stop " + pkg + " 2>/dev/null; pm disable-user --user 0 " + pkg + " 2>/dev/null");
+                                                        ShellUtils.execRootAction("am force-stop " + pkg + " 2>/dev/null; pm disable-user --user 0 " + pkg + " 2>/dev/null");
                                                         item.isEnabled = false;
                                                         mainHandler.post(new Runnable() {
                                                             @Override
@@ -3086,7 +3123,7 @@ public class MainActivity extends Activity {
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
-                            ShellUtils.execRoot(ConfigManager.buildSetStandbyBucketCmd(item.pkg, bCode));
+                            ShellUtils.execRootAction(ConfigManager.buildSetStandbyBucketCmd(item.pkg, bCode));
                             item.standbyBucket = bucketInts[which];
                             mainHandler.post(new Runnable() {
                                 @Override
@@ -3323,7 +3360,7 @@ public class MainActivity extends Activity {
                     .setPositiveButton(">>> OFF <<<", new DialogInterface.OnClickListener() {
                         @Override
                         public void onClick(DialogInterface d, int w) {
-                            ShellUtils.execRoot("sync && reboot -p");
+                            ShellUtils.execRootAction("sync && reboot -p");
                         }
                     })
                     .setNegativeButton("CANCEL", null)

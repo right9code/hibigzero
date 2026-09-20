@@ -34,32 +34,105 @@ public class ShellUtils {
 
     private static final java.util.List<String> memoryLogs = new java.util.concurrent.CopyOnWriteArrayList<String>();
 
+    /**
+     * A root command that never returns would pin whichever thread called it. On the
+     * UI thread that is a permanent freeze with no way back, so every command gets a
+     * deadline. Long enough for a full pm/appops pass over 112 packages, short enough
+     * that a wedged su cannot hang the app forever.
+     */
+    private static final long ROOT_TIMEOUT_MS = 120_000L;
+    private static final long SHELL_TIMEOUT_MS = 60_000L;
+    /** Grace period for the stream pumps to see EOF after the process is reaped. */
+    private static final long PUMP_JOIN_MS = 2_000L;
+
     public static CommandResult execRoot(String command) {
         return execRoot(command, true);
     }
 
     public static CommandResult execRoot(String command, boolean log) {
-        StringBuilder stdout = new StringBuilder();
-        StringBuilder stderr = new StringBuilder();
-        int exitCode = -1;
-        try {
-            Process process = new ProcessBuilder("su", "-c", command).start();
-            BufferedReader stdReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-            String line;
-            while ((line = stdReader.readLine()) != null) stdout.append(line).append("\n");
-            while ((line = errReader.readLine()) != null) stderr.append(line).append("\n");
-            exitCode = process.waitFor();
-        } catch (Exception e) {
-            stderr.append(e.getMessage());
+        if (command == null || command.trim().isEmpty()) {
+            // Callers that reject an invalid package name return "" on purpose, and
+            // spending a root shell on an empty command would be a spawn for nothing.
+            return new CommandResult(0, "", "");
         }
-        CommandResult r = new CommandResult(exitCode, stdout.toString().trim(), stderr.toString().trim());
+        CommandResult r = runProcess(new String[] {"su", "-c", command}, ROOT_TIMEOUT_MS, "su");
         if (log) {
             String preview = command.replace("\n", " ; ");
             if (preview.length() > LOG_PREVIEW_CHARS) preview = preview.substring(0, LOG_PREVIEW_CHARS) + "...";
             appendLog("$ " + preview + " [exit=" + r.exitCode + "]" + (r.stdout.isEmpty() ? "" : " -> " + r.stdout.substring(0, Math.min(r.stdout.length(), LOG_PREVIEW_CHARS))));
         }
         return r;
+    }
+
+    /**
+     * Runs a process and collects its output.
+     *
+     * Both streams are drained on their own threads. Reading them one after the
+     * other deadlocks as soon as a command fills the pipe of the stream we are not
+     * reading yet: the child blocks writing, we block reading, and neither side ever
+     * moves. redirectErrorStream(true) would also prevent that, but it would erase
+     * the stdout/stderr split that CommandResult exposes and callers show in error
+     * messages. The deadline is then actually enforceable, because on expiry we kill
+     * the process and the pumps see EOF rather than blocking on a live pipe.
+     */
+    private static CommandResult runProcess(String[] argv, long timeoutMs, String label) {
+        StringBuilder stdout = new StringBuilder();
+        StringBuilder stderr = new StringBuilder();
+        int exitCode = -1;
+        Process process = null;
+        try {
+            process = new ProcessBuilder(argv).start();
+            final Process p = process;
+            Thread outPump = pump(p.getInputStream(), stdout, label + "-out");
+            Thread errPump = pump(p.getErrorStream(), stderr, label + "-err");
+
+            boolean finished = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            if (finished) {
+                exitCode = process.exitValue();
+            } else {
+                process.destroyForcibly();
+            }
+            joinQuietly(outPump);
+            joinQuietly(errPump);
+            // Appended only after the pumps have stopped, so no two threads touch
+            // the same StringBuilder.
+            if (!finished) stderr.append("[timed out after ").append(timeoutMs / 1000).append("s]");
+        } catch (Exception e) {
+            stderr.append(e.getMessage());
+        } finally {
+            if (process != null) process.destroy();
+        }
+        return new CommandResult(exitCode, stdout.toString().trim(), stderr.toString().trim());
+    }
+
+    /** Drains one stream into its buffer on its own thread. */
+    private static Thread pump(final java.io.InputStream stream, final StringBuilder into, String name) {
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                BufferedReader r = null;
+                try {
+                    r = new BufferedReader(new InputStreamReader(stream));
+                    String line;
+                    while ((line = r.readLine()) != null) into.append(line).append("\n");
+                } catch (Exception ignored) {
+                } finally {
+                    try { if (r != null) r.close(); } catch (Exception ignored) {}
+                }
+            }
+        }, name);
+        t.setDaemon(true);
+        t.start();
+        return t;
+    }
+
+    private static void joinQuietly(Thread t) {
+        if (t == null) return;
+        try {
+            t.join(PUMP_JOIN_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
@@ -78,6 +151,11 @@ public class ShellUtils {
     }
 
     public static CommandResult execRootAction(String command, boolean log) {
+        if (command == null || command.trim().isEmpty()) {
+            // A rejected package name produces an empty command: there is nothing to
+            // apply, so report that rather than claiming a change was made.
+            return new CommandResult(0, "", "");
+        }
         if (ConfigManager.isDryRun()) {
             String preview = command.replace("\n", " ; ");
             if (preview.length() > LOG_PREVIEW_CHARS) preview = preview.substring(0, LOG_PREVIEW_CHARS) + "...";
@@ -88,21 +166,10 @@ public class ShellUtils {
     }
 
     public static CommandResult exec(String command) {
-        StringBuilder stdout = new StringBuilder();
-        StringBuilder stderr = new StringBuilder();
-        int exitCode = -1;
-        try {
-            Process process = new ProcessBuilder("/system/bin/sh", "-c", command).start();
-            BufferedReader stdReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream()));
-            String line;
-            while ((line = stdReader.readLine()) != null) stdout.append(line).append("\n");
-            while ((line = errReader.readLine()) != null) stderr.append(line).append("\n");
-            exitCode = process.waitFor();
-        } catch (Exception e) {
-            stderr.append(e.getMessage());
+        if (command == null || command.trim().isEmpty()) {
+            return new CommandResult(0, "", "");
         }
-        return new CommandResult(exitCode, stdout.toString().trim(), stderr.toString().trim());
+        return runProcess(new String[] {"/system/bin/sh", "-c", command}, SHELL_TIMEOUT_MS, "sh");
     }
 
     // ── Log persistence ────────────────────────────────────────────────────

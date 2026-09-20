@@ -193,6 +193,43 @@ readable afterwards. Receivers call `ShellUtils.flushLog()` before
 `finish()` returns. The log popup shows the persisted tail merged with anything
 not yet flushed.
 
+### 🔒 Config and command hardening
+
+Package names read back from `/data/local/tmp` end up inside `su -c` commands
+that run **on every boot**, so a name is attacker-controlled input as far as the
+shell is concerned. Two layers stop that:
+
+* **Ownership and mode.** Files root writes but the app reads back (the config,
+  the frozen ledger, the restricted list, the active-governor marker) used to be
+  `chmod 666`, because root owns them and the app has to read them. They are now
+  handed to the app's own uid with `0600`, falling back to `0644` if the `chown`
+  is refused — which still cannot be tampered with by a non-root process. Those
+  writes all flow through one helper, `ConfigManager.secureFileTail()`.
+* **Validated names.** `ConfigManager.isValidPackageName()` admits no shell
+  metacharacter, no whitespace and no leading `-`, and is applied where names
+  enter a command (`buildPmCmd`, `buildRestrictCmd`, `buildUnrestrictCmd`,
+  `buildSetStandbyBucketCmd`, `buildDozeWhitelistCmd`, `splitPkgList`) and where
+  they are read back (`loadRestrictedPkgs`, `loadFrozenLedger`, `recordFrozen`).
+  Standby buckets and governor profiles are allow-listed the same way. A rejected
+  name yields an empty command, and `execRoot`/`execRootAction` return without
+  spawning a shell for it.
+
+Worth knowing: `/data/local/tmp` is `0771` owned by `shell`, so this app cannot
+unlink there even from a file it owns — the active-governor marker has to be
+removed via root. `File.delete()` failed silently on that for a long time, which
+left the marker behind permanently and made it useless as a "a clamp is applied"
+flag.
+
+### ⏱️ Command execution
+
+`ShellUtils.execRoot()` drains stdout and stderr on their own threads and gives
+every command a deadline. Reading the two streams one after the other deadlocks
+as soon as a command fills the pipe of the stream not yet being read, and an
+unbounded `waitFor()` means a wedged `su` pins the calling thread forever — on
+the UI thread, a permanent freeze. `redirectErrorStream(true)` would also fix the
+deadlock but would erase the stdout/stderr split that `CommandResult` exposes, so
+both streams are pumped separately instead.
+
 ## 🔓 Device Rooting Guide
 
 > [!IMPORTANT]

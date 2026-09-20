@@ -187,9 +187,12 @@ public class BootReceiver extends BroadcastReceiver {
                 "settings put global wifi_scan_always_enabled 0 2>/dev/null; " +
                 "cmd wifi set-scan-always-available 0 2>/dev/null");
         }
-        // 13. Battery Cap 85%
-        if ("1".equals(cfg.getProperty("BATTERY_CAP_85"))) {
-            ShellUtils.execRoot("echo 85 > /sys/class/power_supply/battery/charging_limit 2>/dev/null");
+        // 13. Battery cap 85%. Only meaningful when the kernel exposes a
+        //     charge-limit node. This firmware exposes none, so the old command
+        //     was a silent no-op every boot; skip it instead of pretending.
+        if ("1".equals(cfg.getProperty("BATTERY_CAP_85"))
+                && ConfigManager.isChargeLimitAvailable()) {
+            ShellUtils.execRoot(ConfigManager.getChargeLimitCmd(85));
         }
         // 14. Animations
         if ("1".equals(cfg.getProperty("DISABLE_ANIMATIONS"))) {

@@ -856,13 +856,19 @@ public class MainActivity extends Activity {
             "dumpsys deviceidle 2>/dev/null | grep -oE 'mDeepEnabled=[a-z]+' | head -1",
             logDrawer);
 
-        addToggle("BATTERY_85", "BATTERY_CAP_85",
-            "Charge ceiling 85% to protect Li-Ion cell",
-            false,
-            "echo 85 > /sys/class/power_supply/battery/charging_limit 2>/dev/null",
-            "echo 100 > /sys/class/power_supply/battery/charging_limit 2>/dev/null",
-            "cat /sys/class/power_supply/battery/charging_limit 2>/dev/null || echo N/A",
-            logDrawer);
+        if (ConfigManager.isChargeLimitAvailable()) {
+            addToggle("BATTERY_85", "BATTERY_CAP_85",
+                "Charge ceiling 85% to protect Li-Ion cell",
+                false,
+                ConfigManager.getChargeLimitCmd(85),
+                ConfigManager.getChargeLimitCmd(100),
+                ConfigManager.getChargeLimitProbeCmd(),
+                logDrawer);
+        } else {
+            addUnavailableToggle("BATTERY_85",
+                "Needs a kernel charge-limit node and this firmware exposes none: checked charging_limit, charge_control_limit, charge_control_limit_max, batt_slate_mode and charging_enabled. Charging always ran to 100%, so this is left untouched instead of pretending to cap it.");
+        }
+
 
         addToggle("AUTO_SHUTDOWN", "AUTO_SHUTDOWN_ENABLED",
             "Clean reboot -p after inactivity (E-ink retains at 0 mA). Enabling this "
@@ -1539,6 +1545,56 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) { toggleAction.run(); }
         });
+    }
+
+    /**
+     * A switch that cannot work on this device. Rendered as [ N/A ] with the
+     * reason, so the feature is visible and explained rather than being a toggle
+     * that silently does nothing.
+     */
+    private void addUnavailableToggle(String label, String desc) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tTitle = new TextView(this);
+        tTitle.setLayoutParams(new LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tTitle.setText(label);
+        setSp(tTitle, 12);
+        tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tTitle.setTextColor(Color.BLACK);
+
+        TextView pill = new TextView(this);
+        pill.setText("[ N/A ]");
+        pill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pill, 12);
+        pill.setGravity(Gravity.CENTER);
+        pill.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+        pill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+        pill.setTextColor(Color.BLACK);
+
+        topRow.addView(tTitle);
+        topRow.addView(pill);
+        card.addView(topRow);
+
+        TextView tDesc = new TextView(this);
+        tDesc.setText(desc);
+        setSp(tDesc, 11);
+        tDesc.setTextColor(Color.BLACK);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
+        card.addView(tDesc);
+
+        addSectionContent(card);
     }
 
     private void updatePillView(TextView pillBtn, boolean isOn) {

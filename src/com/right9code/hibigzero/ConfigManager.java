@@ -1,5 +1,6 @@
 package com.right9code.hibigzero;
 
+import java.io.File;
 import java.io.FileReader;
 import java.io.BufferedReader;
 import java.util.ArrayList;
@@ -726,6 +727,62 @@ public class ConfigManager {
     public static String getCpuUncapProbeCmd() {
         return "echo p0max=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null) " +
             "p4max=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null)";
+    }
+
+    // ── Charge ceiling (BATTERY_CAP_85) ───────────────────────────
+    /**
+     * Nodes a kernel can expose to cap charging. THIS firmware exposes none of
+     * them: the node this used to write (battery/charging_limit) does not exist,
+     * so the switch silently did nothing while the device charged to 100%
+     * anyway. Rather than pretend, the UI asks whether any of these exists and
+     * renders the switch as N/A when none does.
+     */
+    public static final String[] CHARGE_LIMIT_NODES = {
+        "/sys/class/power_supply/battery/charging_limit",
+        "/sys/class/power_supply/battery/charge_control_limit",
+        "/sys/class/power_supply/battery/charge_control_limit_max",
+        "/sys/class/power_supply/battery/batt_slate_mode",
+        "/sys/class/power_supply/battery/charging_enabled"
+    };
+
+    /**
+     * Root-free availability check: sysfs nodes are world-readable (mode 444),
+     * so this is a handful of stat() calls - no shell, no root, cheap enough to
+     * run while rendering. Fails open, so a device that does have the node never
+     * loses the feature because the check itself erred.
+     */
+    public static boolean isChargeLimitAvailable() {
+        try {
+            for (String p : CHARGE_LIMIT_NODES) {
+                if (new File(p).exists()) return true;
+            }
+        } catch (Throwable t) {
+            return true;
+        }
+        return false;
+    }
+
+    /** Sets the ceiling on whichever node this kernel actually exposes. */
+    public static String getChargeLimitCmd(int percent) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : CHARGE_LIMIT_NODES) {
+            sb.append("[ -e ").append(p).append(" ] && { echo ").append(percent)
+              .append(" > ").append(p).append(" 2>/dev/null; echo ")
+              .append(p.substring(p.lastIndexOf('/') + 1)).append('=')
+              .append(percent).append("; exit 0; }; ");
+        }
+        return sb.append("echo NO_CHARGE_LIMIT_NODE").toString();
+    }
+
+    /** Reports the node in use and its value, or N/A when there is none. */
+    public static String getChargeLimitProbeCmd() {
+        StringBuilder sb = new StringBuilder();
+        for (String p : CHARGE_LIMIT_NODES) {
+            sb.append("[ -e ").append(p).append(" ] && { echo ")
+              .append(p.substring(p.lastIndexOf('/') + 1)).append("=$(cat ")
+              .append(p).append(" 2>/dev/null); exit 0; }; ");
+        }
+        return sb.append("echo N/A").toString();
     }
 
     // ── Suppress GMS alarms (SUPPRESS_ALARMS) ─────────────────────────────

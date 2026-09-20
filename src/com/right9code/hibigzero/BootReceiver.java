@@ -187,13 +187,11 @@ public class BootReceiver extends BroadcastReceiver {
                 "settings put global wifi_scan_always_enabled 0 2>/dev/null; " +
                 "cmd wifi set-scan-always-available 0 2>/dev/null");
         }
-        // 13. Battery cap 85%. Only meaningful when the kernel exposes a
-        //     charge-limit node. This firmware exposes none, so the old command
-        //     was a silent no-op every boot; skip it instead of pretending.
-        if ("1".equals(cfg.getProperty("BATTERY_CAP_85"))
-                && ConfigManager.isChargeLimitAvailable()) {
-            ShellUtils.execRoot(ConfigManager.getChargeLimitCmd(85));
-        }
+        // 13. Charge ceiling. The kernel resets the MTK charge switch at boot, so a
+        //     stuck "charging off" cannot survive a reboot. This re-arms the poll
+        //     when the ceiling is enabled and the charger is attached, and makes
+        //     sure charging is allowed when it is not.
+        ChargeLimitController.applyConfig(context);
         // 14. Animations
         if ("1".equals(cfg.getProperty("DISABLE_ANIMATIONS"))) {
             ShellUtils.execRoot("settings put global window_animation_scale 0.0 2>/dev/null; " +

@@ -125,6 +125,11 @@ public class MainActivity extends Activity {
         currentConfig = ConfigManager.loadConfig();
         if (getIntent() != null) activeTab = getIntent().getIntExtra("tab", 0);
 
+        // Re-arm the charge ceiling. Boot and charger-attach already do this, but
+        // after an app update neither has happened yet, so opening the app is the
+        // third trigger. It resumes charging when the feature is off.
+        ChargeLimitController.applyConfig(this);
+
         // Ensure log file is writable + re-assert our own background rights.
         new Thread(new Runnable() {
             @Override
@@ -135,6 +140,9 @@ public class MainActivity extends Activity {
                 // One-shot self-protection probe (repairs too, if needed) so the
                 // PROTECTION card can show a real state without polling.
                 selfProtectRaw = ShellUtils.execRoot(ConfigManager.buildSelfCheckAndFixCmd(), false).stdout.trim();
+                // Warm the charge-switch probe. It needs a root shell, and doing it
+                // here keeps that spawn off the UI thread when the card renders.
+                ConfigManager.isChargeLimitAvailable();
                 mainHandler.post(new Runnable() {
                     @Override
                     public void run() {
@@ -863,16 +871,81 @@ public class MainActivity extends Activity {
             logDrawer);
 
         if (ConfigManager.isChargeLimitAvailable()) {
-            addToggle("BATTERY_85", "BATTERY_CAP_85",
-                "Charge ceiling 85% to protect Li-Ion cell",
+            addToggle("CHARGE_LIMIT", "BATTERY_CAP_85",
+                "Stop charging at the target and run off the charger instead of "
+                    + "sitting at 100% all night. Only polls while plugged in, and "
+                    + "charging is restored the moment the cable comes out.",
                 false,
-                ConfigManager.getChargeLimitCmd(85),
-                ConfigManager.getChargeLimitCmd(100),
+                "", "",
                 ConfigManager.getChargeLimitProbeCmd(),
-                logDrawer);
+                logDrawer,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        ChargeLimitController.applyConfig(MainActivity.this);
+                    }
+                });
+
+            // Target selector. The resume point is derived 5% below the target;
+            // that gap is what stops the switch chattering at the threshold.
+            LinearLayout limitRow = new LinearLayout(this);
+            limitRow.setOrientation(LinearLayout.HORIZONTAL);
+            limitRow.setGravity(Gravity.CENTER_VERTICAL);
+            limitRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
+            limitRow.setBackgroundColor(Color.WHITE);
+
+            TextView lLabel = new TextView(this);
+            lLabel.setText("HOLD AT: ");
+            lLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(lLabel, 11);
+            lLabel.setTextColor(Color.BLACK);
+
+            final TextView lVal = new TextView(this);
+            lVal.setText(ConfigManager.getChargeLimitPct() + "%"
+                + "  (resume " + ConfigManager.getChargeResumePct() + "%)");
+            lVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(lVal, 11);
+            lVal.setTextColor(Color.BLACK);
+            lVal.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+
+            Button changeLimit = new Button(this);
+            changeLimit.setText("[CHANGE]");
+            changeLimit.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(changeLimit, 11);
+            changeLimit.setBackgroundColor(Color.BLACK);
+            changeLimit.setTextColor(Color.WHITE);
+            changeLimit.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    final String[] opts = {"70%", "75%", "80% (recommended)", "85%", "90%"};
+                    final int[] vals = {70, 75, 80, 85, 90};
+                    new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("CHARGE CEILING")
+                        .setItems(opts, new DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(DialogInterface d, int which) {
+                                currentConfig.setProperty("CHARGE_LIMIT_PCT",
+                                    String.valueOf(vals[which]));
+                                ConfigManager.saveConfig(currentConfig);
+                                lVal.setText(vals[which] + "%  (resume "
+                                    + Math.max(50, vals[which] - 5) + "%)");
+                                ChargeLimitController.applyConfig(MainActivity.this);
+                            }
+                        }).show();
+                }
+            });
+
+            limitRow.addView(lLabel);
+            limitRow.addView(lVal);
+            limitRow.addView(changeLimit);
+            addSectionContent(limitRow);
         } else {
-            addUnavailableToggle("BATTERY_85",
-                "Needs a kernel charge-limit node and this firmware exposes none: checked charging_limit, charge_control_limit, charge_control_limit_max, batt_slate_mode and charging_enabled. Charging always ran to 100%, so this is left untouched instead of pretending to cap it.");
+            addUnavailableToggle("CHARGE_LIMIT",
+                "This device exposes no charge-control switch, and unlike the old "
+                    + "implementation the app no longer pretends to cap charging: it "
+                    + "checked for a charge threshold node and for the MediaTek "
+                    + "current_cmd switch, and found neither.");
         }
 
 

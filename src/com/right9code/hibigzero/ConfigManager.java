@@ -18,7 +18,7 @@ public class ConfigManager {
     public static final String[] CONF_KEYS = {
         "FIX_UART","GOOGLE_STACK","BIGME_BLOAT","MTK_CELLULAR","AOSP_STUBS",
         "LOCKDOWN_GBOARD","AGGRESSIVE_DOZE","SUPPRESS_ALARMS","KERNEL_SENSOR",
-        "BATTERY_CAP_85","GOVERNOR_PROFILE","CPU_OPTIMIZER","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
+        "BATTERY_CAP_85","CHARGE_LIMIT_PCT","GOVERNOR_PROFILE","CPU_OPTIMIZER","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
         "SLEEP_GOVERNOR","SLEEP_GOVERNOR_ENABLED",
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
         "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
@@ -448,7 +448,12 @@ public class ConfigManager {
         p.setProperty("AGGRESSIVE_DOZE", "0");
         p.setProperty("SUPPRESS_ALARMS", "0");
         p.setProperty("KERNEL_SENSOR", "0");
+        // Enable flag for the charge ceiling. The key name is legacy and narrower
+        // than the feature: the target lives in CHARGE_LIMIT_PCT. Kept because it
+        // already exists in people's configs and means the same thing, so an old
+        // config that asked for a ceiling now actually gets one.
         p.setProperty("BATTERY_CAP_85", "0");
+        p.setProperty("CHARGE_LIMIT_PCT", "80");
         p.setProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         // CPU_OPTIMIZER has its own key. It used to write into GOVERNOR_PROFILE,
         // which clobbered the wake/sleep profile name with "1".
@@ -740,58 +745,101 @@ public class ConfigManager {
             "p4max=$(cat /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null)";
     }
 
-    // ── Charge ceiling (BATTERY_CAP_85) ───────────────────────────
-    /**
-     * Nodes a kernel can expose to cap charging. THIS firmware exposes none of
-     * them: the node this used to write (battery/charging_limit) does not exist,
-     * so the switch silently did nothing while the device charged to 100%
-     * anyway. Rather than pretend, the UI asks whether any of these exists and
-     * renders the switch as N/A when none does.
-     */
-    public static final String[] CHARGE_LIMIT_NODES = {
-        "/sys/class/power_supply/battery/charging_limit",
-        "/sys/class/power_supply/battery/charge_control_limit",
-        "/sys/class/power_supply/battery/charge_control_limit_max",
-        "/sys/class/power_supply/battery/batt_slate_mode",
-        "/sys/class/power_supply/battery/charging_enabled"
+    // ── Charge ceiling (BATTERY_CAP_85 + CHARGE_LIMIT_PCT) ────────────────
+    // "BATTERY_CAP_85" is the on/off flag; the target percentage lives in
+    // CHARGE_LIMIT_PCT (resume is derived 5% below it).
+    //
+    // This firmware exposes no charge *threshold* node, which is what the old
+    // implementation looked for (charging_limit, charge_control_limit, ...) and
+    // why it silently did nothing. It does expose the MediaTek charge switch, and
+    // that is all a ceiling needs: ACC and the Magisk charge-limiter modules do not
+    // add kernel support either, they flip an existing switch and poll. Verified
+    // on this device:
+    //   echo "1 1" > /proc/mtk_battery_cmd/current_cmd  -> status Charging -> Not charging
+    //   echo "0 0" > /proc/mtk_battery_cmd/current_cmd  -> status back to Charging
+    // The node reads back exactly what was written, so it is self-describing and
+    // no state file is needed.
+    //
+    // battery/disable also exists and is writable here, but it is a NO-OP: with it
+    // set to 1 the battery kept charging at 334 mA. It is deliberately not used.
+    public static final String[][] CHARGE_SWITCHES = {
+        // { node, value that STOPS charging, value that RESUMES charging }
+        { "/proc/mtk_battery_cmd/current_cmd", "1 1", "0 0" }
     };
 
     /**
-     * Root-free availability check: sysfs nodes are world-readable (mode 444),
-     * so this is a handful of stat() calls - no shell, no root, cheap enough to
-     * run while rendering. Fails open, so a device that does have the node never
-     * loses the feature because the check itself erred.
+     * Whether this device has the charge switch. Cached, because the answer cannot
+     * change while the device is running - the node is either in the kernel or not.
+     *
+     * The probe MUST run as root. /proc/mtk_battery_cmd is not traversable by a
+     * normal UID, so a plain File.exists() from an app reports false on a device
+     * that does have the node and that root can read and write. That is exactly the
+     * mistake this check made first: it hid the feature on a phone where it works.
+     * Verified on device - `ls /proc/mtk_battery_cmd/` as the shell user is
+     * "Permission denied", while root lists it and the node reads normally.
      */
+    private static volatile Boolean chargeLimitAvailable = null;
+
     public static boolean isChargeLimitAvailable() {
+        Boolean cached = chargeLimitAvailable;
+        if (cached != null) return cached;
         try {
-            for (String p : CHARGE_LIMIT_NODES) {
-                if (new File(p).exists()) return true;
+            StringBuilder sb = new StringBuilder();
+            for (String[] sw : CHARGE_SWITCHES) {
+                sb.append("[ -e ").append(sw[0]).append(" ] && { echo YES; exit 0; }; ");
             }
+            sb.append("echo NO");
+            String out = ShellUtils.execRoot(sb.toString(), false).stdout;
+            chargeLimitAvailable = Boolean.valueOf(out.contains("YES"));
         } catch (Throwable t) {
-            return true;
+            return true;   // fail open: never lose the feature because the check erred
         }
-        return false;
+        return chargeLimitAvailable;
     }
 
-    /** Sets the ceiling on whichever node this kernel actually exposes. */
-    public static String getChargeLimitCmd(int percent) {
+    /** Target percentage, clamped to a range that is useful for a battery ceiling. */
+    public static int getChargeLimitPct() {
+        try {
+            int pct = Integer.parseInt(
+                loadConfig().getProperty("CHARGE_LIMIT_PCT", "80").trim());
+            if (pct >= 50 && pct <= 100) return pct;
+        } catch (Exception ignored) {}
+        return 80;
+    }
+
+    /** Resume 5% below the target: the gap is what stops the switch chattering. */
+    public static int getChargeResumePct() {
+        return Math.max(50, getChargeLimitPct() - 5);
+    }
+
+    /** Stops charging on whichever switch this device has. */
+    public static String getChargeStopCmd() {
         StringBuilder sb = new StringBuilder();
-        for (String p : CHARGE_LIMIT_NODES) {
-            sb.append("[ -e ").append(p).append(" ] && { echo ").append(percent)
-              .append(" > ").append(p).append(" 2>/dev/null; echo ")
-              .append(p.substring(p.lastIndexOf('/') + 1)).append('=')
-              .append(percent).append("; exit 0; }; ");
+        for (String[] sw : CHARGE_SWITCHES) {
+            sb.append("[ -e ").append(sw[0]).append(" ] && { echo \"")
+              .append(sw[1]).append("\" > ").append(sw[0])
+              .append(" 2>/dev/null; echo STOPPED; exit 0; }; ");
         }
-        return sb.append("echo NO_CHARGE_LIMIT_NODE").toString();
+        return sb.append("echo NO_CHARGE_SWITCH").toString();
     }
 
-    /** Reports the node in use and its value, or N/A when there is none. */
+    /** Resumes charging. Written on every unplug and before every evaluate. */
+    public static String getChargeResumeCmd() {
+        StringBuilder sb = new StringBuilder();
+        for (String[] sw : CHARGE_SWITCHES) {
+            sb.append("[ -e ").append(sw[0]).append(" ] && { echo \"")
+              .append(sw[2]).append("\" > ").append(sw[0])
+              .append(" 2>/dev/null; echo RESUMED; exit 0; }; ");
+        }
+        return sb.append("echo NO_CHARGE_SWITCH").toString();
+    }
+
+    /** Reports the switch value so the UI can show whether charging is held or not. */
     public static String getChargeLimitProbeCmd() {
         StringBuilder sb = new StringBuilder();
-        for (String p : CHARGE_LIMIT_NODES) {
-            sb.append("[ -e ").append(p).append(" ] && { echo ")
-              .append(p.substring(p.lastIndexOf('/') + 1)).append("=$(cat ")
-              .append(p).append(" 2>/dev/null); exit 0; }; ");
+        for (String[] sw : CHARGE_SWITCHES) {
+            sb.append("[ -e ").append(sw[0]).append(" ] && { cat ")
+              .append(sw[0]).append(" 2>/dev/null; exit 0; }; ");
         }
         return sb.append("echo N/A").toString();
     }

@@ -51,5 +51,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Charger attach/detach and the charge-ceiling poll. Both power actions are
+             on the implicit-broadcast exemption list, so they still arrive after the
+             process is killed - attaching a charger must resume charging even then. -->
+        <receiver
+            android:name=".PowerReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.POWER_CONNECTED" />
+                <action android:name="android.intent.action.POWER_DISCONNECTED" />
+                <action android:name="com.right9code.hibigzero.CHARGE_LIMIT_TICK" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>

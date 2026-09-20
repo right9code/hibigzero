@@ -20,7 +20,7 @@ HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 
 * **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale instead of a hardcoded width-based scaler.
 * **Density-independent layout** — all padding, margins, and dividers use dp, so the UI scales correctly across screen densities.
-* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.3.0`), and author (`by right9code`).
+* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.4.0`), and author (`by right9code`).
 * **UPDATE button** — one-tap GitHub release checker with in-app download, progress, and self-install.
 * **Clean tab bar** — tabs are visually separated from the banner and from each other, use fixed labels, and mark the active tab with an underline indicator instead of a `>>` prefix.
 * **Collapsible sections** — every section header (`HARDWARE`, `DEBLOAT`, `NETWORK`, `POWER`, `PACKAGE MANAGER`, and the Battery sections) can be tapped to collapse or expand its body.
@@ -335,11 +335,11 @@ If your Bigme HiBreak is not yet rooted, follow the comprehensive step-by-step g
 ### Steps
 1. Download the latest APK from [Releases](https://github.com/right9code/hibigzero/releases/latest):
    ```sh
-   HiBigZero-v1.3.0-release.apk
+   HiBigZero-v1.4.0-release.apk
    ```
 2. Install via ADB:
    ```sh
-   adb install -r HiBigZero-v1.3.0-release.apk
+   adb install -r HiBigZero-v1.4.0-release.apk
    ```
 3. Open **HiBig Zero** on your device and grant Root (Superuser) permissions when prompted by Magisk.
 4. Tweak your desired toggles or switch to **E-Reader Mode** on Tab 1.

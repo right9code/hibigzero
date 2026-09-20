@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HiBig Zero - Standalone Release APK Builder v1.3.4
+HiBig Zero - Standalone Release APK Builder
 Author: right9code
 Target: Bigme HiBreak B6 BW / Color (MediaTek MT6765 Helio P35) | Android 14
 Package: com.right9code.hibigzero
@@ -11,6 +11,29 @@ import os, sys, re, shutil, hashlib, subprocess, tempfile
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 RELEASES_DIR = os.path.join(ROOT_DIR, "releases")
 os.makedirs(RELEASES_DIR, exist_ok=True)
+
+MANIFEST_PATH = os.path.join(ROOT_DIR, "AndroidManifest.xml")
+
+
+def read_manifest_version():
+    """
+    The manifest is the single source of truth for the version.
+
+    This used to be hardcoded in three places here - the banner, the APK filename
+    and the checksum line - which is the same drift that already bit this project
+    once when the UI banner fell out of sync with the real version. Reading it means
+    a release bump is one edit, in one file.
+    """
+    with open(MANIFEST_PATH, "r") as f:
+        manifest = f.read()
+    m = re.search(r'android:versionName="([^"]+)"', manifest)
+    if not m:
+        raise SystemExit("build.py: could not read android:versionName from AndroidManifest.xml")
+    return m.group(1)
+
+
+VERSION_NAME = read_manifest_version()
+APK_NAME = f"HiBigZero-v{VERSION_NAME}-release.apk"
 
 JAVAC_BIN     = "/usr/bin/javac"
 AAPT_BIN      = "/home/right9zzz/Android/Sdk/build-tools/35.0.0/aapt"
@@ -115,13 +138,13 @@ def ensure_keystore():
 
 def build_release():
     print("=" * 60)
-    print("HiBig Zero v1.3.4 Release APK Builder")
+    print(f"HiBig Zero v{VERSION_NAME} Release APK Builder")
     print("Package: com.right9code.hibigzero")
     print("Author:  right9code")
     print("=" * 60)
 
     identity = ensure_keystore()
-    final_apk = os.path.join(RELEASES_DIR, "HiBigZero-v1.3.4-release.apk")
+    final_apk = os.path.join(RELEASES_DIR, APK_NAME)
     checksum_file = final_apk + ".sha256"
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -229,7 +252,7 @@ def build_release():
             h.update(chunk)
     sha256_str = h.hexdigest()
     with open(checksum_file, "w") as f:
-        f.write(f"{sha256_str}  HiBigZero-v1.3.4-release.apk\n")
+        f.write(f"{sha256_str}  {APK_NAME}\n")
 
     size_bytes = os.path.getsize(final_apk)
     print("=" * 60)

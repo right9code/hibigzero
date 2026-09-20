@@ -456,16 +456,6 @@ public class MainActivity extends Activity {
         // ─ Section: HARDWARE ──────────────────────────────────────────────
         addSectionHeader("HARDWARE");
 
-        // Pre-build pm command strings
-        String frGoogle    = ConfigManager.buildPmCmd(ConfigManager.GOOGLE_PKGS, true);
-        String unGoogle    = ConfigManager.buildPmCmd(ConfigManager.GOOGLE_PKGS, false);
-        String frBigme     = ConfigManager.buildPmCmd(ConfigManager.BIGME_PKGS, true);
-        String unBigme     = ConfigManager.buildPmCmd(ConfigManager.BIGME_PKGS, false);
-        String frMtk       = ConfigManager.buildPmCmd(ConfigManager.MTK_PKGS, true);
-        String unMtk       = ConfigManager.buildPmCmd(ConfigManager.MTK_PKGS, false);
-        String frAosp      = ConfigManager.buildPmCmd(ConfigManager.AOSP_PKGS, true);
-        String unAosp      = ConfigManager.buildPmCmd(ConfigManager.AOSP_PKGS, false);
-
         addToggle("FIX_UART", "FIX_UART",
             "Kill runaway uart2serport daemon & clear early-boot crash latch",
             false,
@@ -1818,8 +1808,11 @@ public class MainActivity extends Activity {
                         }).start();
                     }
                 } else {
-                    // UNFREEZE: unfreeze all packages in this category
-                    String cmd = ConfigManager.buildPmCmd(pkgList, false);
+                    // UNFREEZE: undo exactly what ON froze - the selected set. The
+                    // old code re-enabled the entire category, which could undo
+                    // freezes applied by other means.
+                    String cmd = ConfigManager.buildSelectedPmCmd(
+                        currentConfig, pkgList, selKey, false);
                     if (!cmd.isEmpty()) {
                         final String unfreezeCmd = cmd;
                         new Thread(new Runnable() {
@@ -1903,10 +1896,10 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         statusLp.setMarginEnd(dpToPx(8));
         statusPill.setLayoutParams(statusLp);
-        boolean installed = AppInstaller.isInstalled(app.packageName);
+        boolean installed = AppInstaller.isInstalled(this, app.packageName);
         if (installed) {
-            String ver = AppInstaller.getInstalledVersion(app.packageName);
-            statusPill.setText("INSTALLED" + (ver != null ? " v" + ver : ""));
+            String ver = AppInstaller.getInstalledVersion(this, app.packageName);
+            statusPill.setText("INSTALLED" + versionSuffix(ver));
             statusPill.setTextColor(Color.WHITE);
             statusPill.setBackgroundColor(Color.BLACK);
         } else {
@@ -2031,7 +2024,7 @@ public class MainActivity extends Activity {
                                 progressRow.setVisibility(View.GONE);
                                 installBtn.setEnabled(true);
 
-                                boolean nowInstalled = AppInstaller.isInstalled(app.packageName);
+                                boolean nowInstalled = AppInstaller.isInstalled(MainActivity.this, app.packageName);
                                 if (success) {
                                     if (app.isSystem && !nowInstalled) {
                                         // Magisk system app — needs reboot to activate
@@ -2087,12 +2080,19 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** " v1.2.3", or " v2026.07.1" when the versionName already has its own v. */
+    private static String versionSuffix(String ver) {
+        if (ver == null || ver.trim().isEmpty()) return "";
+        String v = ver.trim();
+        return (v.startsWith("v") || v.startsWith("V")) ? " " + v : " v" + v;
+    }
+
     /** Refresh a card's pill + buttons to match the installed state. */
     private void updateAppCardState(AppInstaller.AppDef app, boolean installed,
                                     TextView statusPill, Button installBtn, Button uninstallBtn) {
         if (installed) {
-            String ver = AppInstaller.getInstalledVersion(app.packageName);
-            statusPill.setText("INSTALLED" + (ver != null ? " v" + ver : ""));
+            String ver = AppInstaller.getInstalledVersion(this, app.packageName);
+            statusPill.setText("INSTALLED" + versionSuffix(ver));
             statusPill.setTextColor(Color.WHITE);
             statusPill.setBackgroundColor(Color.BLACK);
             installBtn.setText("UPDATE");
@@ -2149,7 +2149,7 @@ public class MainActivity extends Activity {
         // A system-app (Magisk overlay) removal needs a reboot to fully release the
         // /system path, so remember it now — the package may be gone by the time the
         // result callback runs.
-        final boolean wasSystem = AppInstaller.isInstalledAsSystem(app.packageName);
+        final boolean wasSystem = AppInstaller.isInstalledAsSystem(this, app.packageName);
 
         AppInstaller.uninstall(MainActivity.this, app, new AppInstaller.InstallCallback() {
             @Override

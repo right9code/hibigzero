@@ -424,15 +424,22 @@ public class ConfigManager {
         return "BALANCED EFFICIENT (2.2GHz PEAK)";
     }
 
-    // All defaults OFF — user must enable features manually on first launch.
-    // Debulk lists and system tweaks do nothing until the user toggles them on.
+    // All defaults OFF — the user enables features manually on first launch.
+    //
+    // NOTE: the four debloat keys below are INVERTED relative to every other
+    // key: "0" means ON (freeze the category) and "1" means OFF. They used to
+    // default to "0", so the first boot after a fresh install silently froze
+    // the whole Google/Bigme/MTK/AOSP lists (~120 packages, including the
+    // telephony stack and the only alarm clock) even though the toggle had
+    // never been touched. An empty *_PKGS_SEL means "every package in the
+    // category", which is what made it so wide.
     public static Properties defaults() {
         Properties p = new Properties();
         p.setProperty("FIX_UART", "0");
-        p.setProperty("GOOGLE_STACK", "0");
-        p.setProperty("BIGME_BLOAT", "0");
-        p.setProperty("MTK_CELLULAR", "0");
-        p.setProperty("AOSP_STUBS", "0");
+        p.setProperty("GOOGLE_STACK", "1");
+        p.setProperty("BIGME_BLOAT", "1");
+        p.setProperty("MTK_CELLULAR", "1");
+        p.setProperty("AOSP_STUBS", "1");
         p.setProperty("LOCKDOWN_GBOARD", "0");
         p.setProperty("AGGRESSIVE_DOZE", "0");
         p.setProperty("SUPPRESS_ALARMS", "0");

@@ -62,28 +62,76 @@ public class BootReceiver extends BroadcastReceiver {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", true);
             if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.GOOGLE_PKGS, false));
+            // OFF must undo exactly what ON did - the selected set - rather than
+            // re-enabling the whole category, which could undo freezes applied
+            // by other means.
+            //
+            // Only act when a selection was actually saved: an empty *_PKGS_SEL
+            // means "every package in the category", so without this guard an
+            // OFF category (now the default) would re-enable ~120 packages on
+            // every single boot, undoing deliberate vendor freezes and burning
+            // four root spawns for nothing.
+            if (!cfg.getProperty("GOOGLE_PKGS_SEL", "").trim().isEmpty()) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", false);
+                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            }
         }
         // 3. Bigme Bloat (respect per-package selection)
         if ("0".equals(cfg.getProperty("BIGME_BLOAT"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", true);
             if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.BIGME_PKGS, false));
+            // OFF must undo exactly what ON did - the selected set - rather than
+            // re-enabling the whole category, which could undo freezes applied
+            // by other means.
+            //
+            // Only act when a selection was actually saved: an empty *_PKGS_SEL
+            // means "every package in the category", so without this guard an
+            // OFF category (now the default) would re-enable ~120 packages on
+            // every single boot, undoing deliberate vendor freezes and burning
+            // four root spawns for nothing.
+            if (!cfg.getProperty("BIGME_PKGS_SEL", "").trim().isEmpty()) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", false);
+                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            }
         }
         // 4. MTK Cellular (respect per-package selection)
         if ("0".equals(cfg.getProperty("MTK_CELLULAR"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", true);
             if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.MTK_PKGS, false));
+            // OFF must undo exactly what ON did - the selected set - rather than
+            // re-enabling the whole category, which could undo freezes applied
+            // by other means.
+            //
+            // Only act when a selection was actually saved: an empty *_PKGS_SEL
+            // means "every package in the category", so without this guard an
+            // OFF category (now the default) would re-enable ~120 packages on
+            // every single boot, undoing deliberate vendor freezes and burning
+            // four root spawns for nothing.
+            if (!cfg.getProperty("MTK_PKGS_SEL", "").trim().isEmpty()) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", false);
+                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            }
         }
         // 5. AOSP Stubs (respect per-package selection)
         if ("0".equals(cfg.getProperty("AOSP_STUBS"))) {
             String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", true);
             if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
         } else {
-            ShellUtils.execRoot(ConfigManager.buildPmCmd(ConfigManager.AOSP_PKGS, false));
+            // OFF must undo exactly what ON did - the selected set - rather than
+            // re-enabling the whole category, which could undo freezes applied
+            // by other means.
+            //
+            // Only act when a selection was actually saved: an empty *_PKGS_SEL
+            // means "every package in the category", so without this guard an
+            // OFF category (now the default) would re-enable ~120 packages on
+            // every single boot, undoing deliberate vendor freezes and burning
+            // four root spawns for nothing.
+            if (!cfg.getProperty("AOSP_PKGS_SEL", "").trim().isEmpty()) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", false);
+                if (!cmd.isEmpty()) ShellUtils.execRoot(cmd);
+            }
         }
         // 6. GBoard Lockdown
         if ("1".equals(cfg.getProperty("LOCKDOWN_GBOARD"))) {

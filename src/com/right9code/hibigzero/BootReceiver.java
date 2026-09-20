@@ -28,6 +28,66 @@ public class BootReceiver extends BroadcastReceiver {
 
     public void applyAllRulesPublic(android.content.Context ctx) { applyAllRules(ctx); writeBootTime(); }
 
+    /**
+     * The package categories, in application order. These were four copy-pasted
+     * blocks, and the OFF branch carries a guard that has to be identical in all
+     * four - which is exactly the duplication that already produced two bugs here
+     * (freeze-by-default, and OFF re-enabling a whole category). One table, one
+     * implementation, so the guard cannot drift apart.
+     */
+    private static final PkgCategory[] PKG_CATEGORIES = {
+        // { config key, package list, per-package selection key }
+        new PkgCategory("GOOGLE_STACK", ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL"),
+        new PkgCategory("BIGME_BLOAT",  ConfigManager.BIGME_PKGS,  "BIGME_PKGS_SEL"),
+        new PkgCategory("MTK_CELLULAR", ConfigManager.MTK_PKGS,    "MTK_PKGS_SEL"),
+        new PkgCategory("AOSP_STUBS",   ConfigManager.AOSP_PKGS,   "AOSP_PKGS_SEL"),
+    };
+
+    /**
+     * Rules that are exactly "<key>=1 -> this command", in application order. The
+     * ConfigManager builders below are pure string builders, so the table can hold
+     * their output directly.
+     */
+    private static final OnRule[] ON_RULES = {
+        new OnRule("KILL_SHUTDOWN_ALARM", ConfigManager.getKillShutdownAlarmCmd(true)),
+        new OnRule("SUPPRESS_JS_IDLE",    ConfigManager.getSuppressJsIdleCmd(true)),
+        new OnRule("WIDE_ALARM_FUZZ",     ConfigManager.getWideAlarmFuzzCmd(true)),
+        new OnRule("INSTANT_LOCK",        ConfigManager.getInstantLockCmd(true)),
+    };
+
+    private static final class PkgCategory {
+        final String key, list, selKey;
+        PkgCategory(String key, String list, String selKey) {
+            this.key = key; this.list = list; this.selKey = selKey;
+        }
+
+        /**
+         * Key "0" freezes the selected set; anything else unfreezes exactly that
+         * set. OFF must undo exactly what ON did - the selected set - rather than
+         * re-enabling the whole category, which could undo freezes applied by other
+         * means.
+         *
+         * Only act when a selection was actually saved: an empty *_PKGS_SEL means
+         * "every package in the category", so without this guard an OFF category
+         * (the default) would re-enable ~120 packages on every boot, undoing
+         * deliberate vendor freezes and burning four root spawns for nothing.
+         */
+        void apply(Properties cfg) {
+            if ("0".equals(cfg.getProperty(key))) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, list, selKey, true);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
+            } else if (!cfg.getProperty(selKey, "").trim().isEmpty()) {
+                String cmd = ConfigManager.buildSelectedPmCmd(cfg, list, selKey, false);
+                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
+            }
+        }
+    }
+
+    private static final class OnRule {
+        final String key, cmd;
+        OnRule(String key, String cmd) { this.key = key; this.cmd = cmd; }
+    }
+
     private void applyAllRules(android.content.Context context) {
         ShellUtils.appendLog("=== BootReceiver: applying all rules ===");
         Properties cfg = ConfigManager.loadConfig();
@@ -59,82 +119,8 @@ public class BootReceiver extends BroadcastReceiver {
                 ShellUtils.execRootAction("setprop ctl.restart uart2serport");
             }
         }
-        // 2. Google Stack (respect per-package selection)
-        if ("0".equals(cfg.getProperty("GOOGLE_STACK"))) {
-            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-        } else {
-            // OFF must undo exactly what ON did - the selected set - rather than
-            // re-enabling the whole category, which could undo freezes applied
-            // by other means.
-            //
-            // Only act when a selection was actually saved: an empty *_PKGS_SEL
-            // means "every package in the category", so without this guard an
-            // OFF category (now the default) would re-enable ~120 packages on
-            // every single boot, undoing deliberate vendor freezes and burning
-            // four root spawns for nothing.
-            if (!cfg.getProperty("GOOGLE_PKGS_SEL", "").trim().isEmpty()) {
-                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.GOOGLE_PKGS, "GOOGLE_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-            }
-        }
-        // 3. Bigme Bloat (respect per-package selection)
-        if ("0".equals(cfg.getProperty("BIGME_BLOAT"))) {
-            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-        } else {
-            // OFF must undo exactly what ON did - the selected set - rather than
-            // re-enabling the whole category, which could undo freezes applied
-            // by other means.
-            //
-            // Only act when a selection was actually saved: an empty *_PKGS_SEL
-            // means "every package in the category", so without this guard an
-            // OFF category (now the default) would re-enable ~120 packages on
-            // every single boot, undoing deliberate vendor freezes and burning
-            // four root spawns for nothing.
-            if (!cfg.getProperty("BIGME_PKGS_SEL", "").trim().isEmpty()) {
-                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.BIGME_PKGS, "BIGME_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-            }
-        }
-        // 4. MTK Cellular (respect per-package selection)
-        if ("0".equals(cfg.getProperty("MTK_CELLULAR"))) {
-            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-        } else {
-            // OFF must undo exactly what ON did - the selected set - rather than
-            // re-enabling the whole category, which could undo freezes applied
-            // by other means.
-            //
-            // Only act when a selection was actually saved: an empty *_PKGS_SEL
-            // means "every package in the category", so without this guard an
-            // OFF category (now the default) would re-enable ~120 packages on
-            // every single boot, undoing deliberate vendor freezes and burning
-            // four root spawns for nothing.
-            if (!cfg.getProperty("MTK_PKGS_SEL", "").trim().isEmpty()) {
-                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.MTK_PKGS, "MTK_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-            }
-        }
-        // 5. AOSP Stubs (respect per-package selection)
-        if ("0".equals(cfg.getProperty("AOSP_STUBS"))) {
-            String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", true);
-            if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-        } else {
-            // OFF must undo exactly what ON did - the selected set - rather than
-            // re-enabling the whole category, which could undo freezes applied
-            // by other means.
-            //
-            // Only act when a selection was actually saved: an empty *_PKGS_SEL
-            // means "every package in the category", so without this guard an
-            // OFF category (now the default) would re-enable ~120 packages on
-            // every single boot, undoing deliberate vendor freezes and burning
-            // four root spawns for nothing.
-            if (!cfg.getProperty("AOSP_PKGS_SEL", "").trim().isEmpty()) {
-                String cmd = ConfigManager.buildSelectedPmCmd(cfg, ConfigManager.AOSP_PKGS, "AOSP_PKGS_SEL", false);
-                if (!cmd.isEmpty()) ShellUtils.execRootAction(cmd);
-            }
-        }
+        // 2-5. Package categories (respect per-package selection)
+        for (PkgCategory cat : PKG_CATEGORIES) cat.apply(cfg);
         // 6. GBoard Lockdown
         if ("1".equals(cfg.getProperty("LOCKDOWN_GBOARD"))) {
             ShellUtils.execRootAction(
@@ -214,17 +200,8 @@ public class BootReceiver extends BroadcastReceiver {
             ShutdownAlarmReceiver.cancelAlarm(context);
         }
         // 16. Suspend failure reduction (Optimization #3)
-        if ("1".equals(cfg.getProperty("KILL_SHUTDOWN_ALARM"))) {
-            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(true));
-        }
-        if ("1".equals(cfg.getProperty("SUPPRESS_JS_IDLE"))) {
-            ShellUtils.execRootAction(ConfigManager.getSuppressJsIdleCmd(true));
-        }
-        if ("1".equals(cfg.getProperty("WIDE_ALARM_FUZZ"))) {
-            ShellUtils.execRootAction(ConfigManager.getWideAlarmFuzzCmd(true));
-        }
-        if ("1".equals(cfg.getProperty("INSTANT_LOCK"))) {
-            ShellUtils.execRootAction(ConfigManager.getInstantLockCmd(true));
+        for (OnRule rule : ON_RULES) {
+            if ("1".equals(cfg.getProperty(rule.key))) ShellUtils.execRootAction(rule.cmd);
         }
         // 17. Reapply user restricted packages (AppOps & Standby Buckets)
         java.util.Set<String> restricted = ConfigManager.loadRestrictedPkgs();

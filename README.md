@@ -272,9 +272,15 @@ rate-limits exact alarms during Doze, so it settles to the idle quota in deep sl
 clamp applied" and "how is it lifted" live in one place instead of being spread
 across whichever receivers happen to touch it.
 
-> Note: **whether the sleep clamp earns its keep is still unmeasured.** If it turns
-> out not to save battery, the honest fix is to delete the feature rather than
-> harden it — see `docs/DURABILITY_ANALYSIS.md`.
+> Note: **the sleep clamp was measured on 2026-09-21 — see
+> `docs/SLEEP_CLAMP_TEST.md`.** It saves ~10–17 mA while the device is awake with the
+> screen off, and nothing at all while suspended (where the firmware powers the cores
+> down regardless). The clamp's mechanism is verified, but the total-energy benefit
+> **cannot be measured on this device**: the battery gauge is unusable below ~10 mA
+> (`charge_counter` frozen, positive current reported during discharge) and the
+> timing/current instruments contradict each other by ~6×. Because the upside is small
+> and bounded while the failure mode is a crippled device, the recommendation is to
+> run with `SLEEP_GOVERNOR_ENABLED=0`.
 
 ### 🛡️ Boot-loop guard
 

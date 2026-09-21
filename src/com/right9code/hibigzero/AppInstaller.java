@@ -96,6 +96,21 @@ public class AppInstaller {
             "LocalSend-.*-android-arm64v8\\.apk",
             false, "org.localsend.localsend_app",
             "Offline cross-platform file sharing"),
+        // The plain release flavour, not the F-Droid one: the fdroid build ships
+        // applicationId "dev.imranr.obtainium.fdroid" signed by F-Droid's key, so
+        // mixing the two would either land as a second app or fail the signature
+        // check on update. The plain asset matches the packageName declared here.
+        // "matches()" is a full match in findAssetUrl, so the sibling
+        // .idsig/.sha256 assets cannot be picked by accident.
+        new AppDef("obtainium", "Obtainium", "ImranR98/Obtainium",
+            "app-arm64-v8a-release\\.apk",
+            false, "dev.imranr.obtainium",
+            "Install & update apps from GitHub releases",
+            // Obtainium's entire job is installing APKs. Without this appop every
+            // install sits behind a system "Allow from this source" confirmation,
+            // which defeats the point of a managed install. Same pattern as the
+            // storage appops granted to KOReader / Obsidian / MiXplorer.
+            "cmd appops set dev.imranr.obtainium REQUEST_INSTALL_PACKAGES allow"),
     };
 
     // ── API response cache (5 min TTL) ──────────────────────────────────

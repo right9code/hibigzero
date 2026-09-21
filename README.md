@@ -20,7 +20,7 @@ HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 
 * **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale instead of a hardcoded width-based scaler.
 * **Density-independent layout** — all padding, margins, and dividers use dp, so the UI scales correctly across screen densities.
-* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.4.0`), and author (`by right9code`).
+* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.5.0`), and author (`by right9code`).
 * **UPDATE button** — one-tap GitHub release checker with in-app download, progress, and self-install.
 * **Clean tab bar** — tabs are visually separated from the banner and from each other, use fixed labels, and mark the active tab with an underline indicator instead of a `>>` prefix.
 * **Collapsible sections** — every section header (`HARDWARE`, `DEBLOAT`, `NETWORK`, `POWER`, `PACKAGE MANAGER`, and the Battery sections) can be tapped to collapse or expand its body.
@@ -48,12 +48,14 @@ HiBig Zero includes a built-in **App Installer** that downloads, installs, and m
 | **Obsidian** | [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases) | User app |
 | **MiXplorer** | [driftywinds/mixplorer-releases](https://github.com/driftywinds/mixplorer-releases) | User app |
 | **LocalSend** | [localsend/localsend](https://github.com/localsend/localsend) | User app |
+| **Obtainium** | [ImranR98/Obtainium](https://github.com/ImranR98/Obtainium) | User app |
 
 ### Features
 * **Resume & retry** — downloads resume from where they left off if the connection drops, with 3 retries and exponential backoff.
 * **APK verification** — file size is checked against the GitHub API before installing.
 * **SELinux-safe installs** — APKs are staged to `/data/local/tmp/` with `chmod 644` before `pm install -r -d -g`.
 * **MANAGE_EXTERNAL_STORAGE** — automatically granted to KOReader, MiXplorer, and Obsidian on Android 14.
+* **Install permission** — `REQUEST_INSTALL_PACKAGES` is granted to Obtainium, so it can install APKs without a per-install confirmation prompt.
 * **Magisk system app support** — AnyHome is installed as a systemless Magisk module to `/system/priv-app/`.
 * **Version comparison** — skips download if already on the latest version, handles `-rc1`/`-beta` suffixes.
 
@@ -341,11 +343,11 @@ If your Bigme HiBreak is not yet rooted, follow the comprehensive step-by-step g
 ### Steps
 1. Download the latest APK from [Releases](https://github.com/right9code/hibigzero/releases/latest):
    ```sh
-   HiBigZero-v1.4.0-release.apk
+   HiBigZero-v1.5.0-release.apk
    ```
 2. Install via ADB:
    ```sh
-   adb install -r HiBigZero-v1.4.0-release.apk
+   adb install -r HiBigZero-v1.5.0-release.apk
    ```
 3. Open **HiBig Zero** on your device and grant Root (Superuser) permissions when prompted by Magisk.
 4. Tweak your desired toggles or switch to **E-Reader Mode** on Tab 1.

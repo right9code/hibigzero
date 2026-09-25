@@ -540,6 +540,8 @@ public class MainActivity extends Activity {
 
         addSensorsControlCard(logDrawer);
 
+        addFrontlightControlCard(logDrawer);
+
         addToggle("ANIMATIONS_0", "DISABLE_ANIMATIONS",
             "Window, transition, animator scales to 0.0x for crisp E-ink",
             false,
@@ -2152,6 +2154,253 @@ public class MainActivity extends Activity {
 
         addSectionContent(selectorPanel);
         updateUiState.run();
+    }
+
+    // ── addFrontlightControlCard: Hardware TI LM3630A Dual-Channel E-Ink Light Control ──
+    private void addFrontlightControlCard(final TextView logDrawer) {
+        final LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        // Top row: Title + Status Pill
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tTitle = new TextView(this);
+        tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tTitle.setText("FRONTLIGHT_CONTROLLER");
+        setSp(tTitle, 12);
+        tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tTitle.setTextColor(Color.BLACK);
+
+        final TextView statusPill = new TextView(this);
+        statusPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(statusPill, 12);
+        statusPill.setGravity(Gravity.CENTER);
+        statusPill.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+
+        topRow.addView(tTitle);
+        topRow.addView(statusPill);
+        card.addView(topRow);
+
+        // Subtitle
+        TextView tDesc = new TextView(this);
+        tDesc.setText("TI LM3630A Dual-String Frontlight (Cool White & Warm Amber). Synchronizes globally with Android system & Bigme EinkCenter.");
+        setSp(tDesc, 11);
+        tDesc.setTypeface(Typeface.DEFAULT);
+        tDesc.setTextColor(Color.BLACK);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(6));
+        card.addView(tDesc);
+
+        // Values display row
+        final TextView valLabel = new TextView(this);
+        valLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(valLabel, 11);
+        valLabel.setTextColor(Color.BLACK);
+        valLabel.setPadding(0, 0, 0, dpToPx(6));
+        card.addView(valLabel);
+
+        final int[] lightState = new int[] { 0, 0 }; // [0]=cold, [1]=warm
+        try {
+            lightState[0] = Integer.parseInt(currentConfig.getProperty("FRONTLIGHT_COLD", "0"));
+            lightState[1] = Integer.parseInt(currentConfig.getProperty("FRONTLIGHT_WARM", "0"));
+        } catch (Exception ignored) {}
+
+        final Runnable updateUi = new Runnable() {
+            @Override
+            public void run() {
+                int c = lightState[0];
+                int w = lightState[1];
+                int cPct = Math.round((c / 255.0f) * 100);
+                int wPct = Math.round((w / 255.0f) * 100);
+                valLabel.setText("❄️ Cool: " + c + "/255 (" + cPct + "%)    🔥 Warm: " + w + "/255 (" + wPct + "%)");
+                if (c == 0 && w == 0) {
+                    statusPill.setText("[ OFF ]");
+                    statusPill.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+                    statusPill.setTextColor(Color.WHITE);
+                } else {
+                    statusPill.setText("[ C:" + c + " W:" + w + " ]");
+                    statusPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+                    statusPill.setTextColor(Color.BLACK);
+                }
+            }
+        };
+
+        final Runnable applyHardware = new Runnable() {
+            @Override
+            public void run() {
+                final int c = lightState[0];
+                final int w = lightState[1];
+                currentConfig.setProperty("FRONTLIGHT_COLD", String.valueOf(c));
+                currentConfig.setProperty("FRONTLIGHT_WARM", String.valueOf(w));
+                ConfigManager.saveConfig(currentConfig);
+                updateUi.run();
+
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        String cmd = "echo " + c + " > /sys/bus/i2c/devices/2-0036/lm3630a_cold_light 2>/dev/null; " +
+                            "echo " + w + " > /sys/bus/i2c/devices/2-0036/lm3630a_warm_light 2>/dev/null; " +
+                            "settings put system ColdValue " + c + " 2>/dev/null; " +
+                            "settings put system LastColdLight " + c + " 2>/dev/null; " +
+                            "settings put system screen_brightness_cold " + c + " 2>/dev/null; " +
+                            "settings put system WarmValue " + w + " 2>/dev/null; " +
+                            "settings put system LastWarmLight " + w + " 2>/dev/null; " +
+                            "settings put system screen_brightness_warm " + w + " 2>/dev/null; ";
+                        ShellUtils.execRootAction(cmd);
+                        ShellUtils.appendLog("Frontlight set globally: Cool=" + c + " Warm=" + w);
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (logDrawer != null && logDrawer.getVisibility() == View.VISIBLE) {
+                                    logDrawer.setText(ShellUtils.readLog(15));
+                                }
+                            }
+                        });
+                    }
+                }).start();
+            }
+        };
+
+        // Row 1: Cool steppers
+        LinearLayout coolRow = new LinearLayout(this);
+        coolRow.setOrientation(LinearLayout.HORIZONTAL);
+        coolRow.setGravity(Gravity.CENTER_VERTICAL);
+        coolRow.setPadding(0, dpToPx(2), 0, dpToPx(4));
+
+        TextView coolLbl = new TextView(this);
+        coolLbl.setText("❄️ Cool:");
+        setSp(coolLbl, 10);
+        coolLbl.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        coolLbl.setTextColor(Color.BLACK);
+        coolLbl.setLayoutParams(new LinearLayout.LayoutParams(dpToPx(55), ViewGroup.LayoutParams.WRAP_CONTENT));
+        coolRow.addView(coolLbl);
+
+        int[] steps = new int[] { -10, -2, 2, 10 };
+        for (final int step : steps) {
+            Button btn = new Button(this);
+            btn.setText((step > 0 ? "+" : "") + step);
+            setSp(btn, 10);
+            btn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            styleEinkButton(btn, false);
+            btn.setPadding(dpToPx(6), dpToPx(4), dpToPx(6), dpToPx(4));
+            btn.setMinimumHeight(0);
+            btn.setMinimumWidth(0);
+            btn.setMinWidth(0);
+            btn.setMinHeight(0);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            blp.setMarginEnd(dpToPx(4));
+            btn.setLayoutParams(blp);
+            btn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    lightState[0] = Math.max(0, Math.min(255, lightState[0] + step));
+                    applyHardware.run();
+                }
+            });
+            coolRow.addView(btn);
+        }
+        card.addView(coolRow);
+
+        // Row 2: Warm steppers
+        LinearLayout warmRow = new LinearLayout(this);
+        warmRow.setOrientation(LinearLayout.HORIZONTAL);
+        warmRow.setGravity(Gravity.CENTER_VERTICAL);
+        warmRow.setPadding(0, dpToPx(2), 0, dpToPx(4));
+
+        TextView warmLbl = new TextView(this);
+        warmLbl.setText("🔥 Warm:");
+        setSp(warmLbl, 10);
+        warmLbl.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        warmLbl.setTextColor(Color.BLACK);
+        warmLbl.setLayoutParams(new LinearLayout.LayoutParams(dpToPx(55), ViewGroup.LayoutParams.WRAP_CONTENT));
+        warmRow.addView(warmLbl);
+
+        for (final int step : steps) {
+            Button btn = new Button(this);
+            btn.setText((step > 0 ? "+" : "") + step);
+            setSp(btn, 10);
+            btn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            styleEinkButton(btn, false);
+            btn.setPadding(dpToPx(6), dpToPx(4), dpToPx(6), dpToPx(4));
+            btn.setMinimumHeight(0);
+            btn.setMinimumWidth(0);
+            btn.setMinWidth(0);
+            btn.setMinHeight(0);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            blp.setMarginEnd(dpToPx(4));
+            btn.setLayoutParams(blp);
+            btn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    lightState[1] = Math.max(0, Math.min(255, lightState[1] + step));
+                    applyHardware.run();
+                }
+            });
+            warmRow.addView(btn);
+        }
+        card.addView(warmRow);
+
+        // Row 3: Presets (Daytime, Reading, Bedtime, Off)
+        LinearLayout presetRow = new LinearLayout(this);
+        presetRow.setOrientation(LinearLayout.HORIZONTAL);
+        presetRow.setGravity(Gravity.CENTER_VERTICAL);
+        presetRow.setPadding(0, dpToPx(4), 0, 0);
+
+        String[] pNames = new String[] { "☀️ Day", "📖 Read", "🌙 Bed", "🌑 Off" };
+        final int[][] pVals = new int[][] { { 80, 0 }, { 50, 60 }, { 0, 50 }, { 0, 0 } };
+
+        for (int i = 0; i < pNames.length; i++) {
+            final int idx = i;
+            Button pBtn = new Button(this);
+            pBtn.setText(pNames[idx]);
+            setSp(pBtn, 10);
+            pBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            styleEinkButton(pBtn, idx == 3);
+            pBtn.setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(4));
+            pBtn.setMinimumHeight(0);
+            pBtn.setMinimumWidth(0);
+            pBtn.setMinWidth(0);
+            pBtn.setMinHeight(0);
+            LinearLayout.LayoutParams pblp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            if (i < pNames.length - 1) pblp.setMarginEnd(dpToPx(4));
+            pBtn.setLayoutParams(pblp);
+            pBtn.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    lightState[0] = pVals[idx][0];
+                    lightState[1] = pVals[idx][1];
+                    applyHardware.run();
+                }
+            });
+            presetRow.addView(pBtn);
+        }
+        card.addView(presetRow);
+
+        // Async probe hardware on launch to display live state
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ShellUtils.CommandResult resC = ShellUtils.execRootAction("cat /sys/bus/i2c/devices/2-0036/lm3630a_cold_light 2>/dev/null");
+                ShellUtils.CommandResult resW = ShellUtils.execRootAction("cat /sys/bus/i2c/devices/2-0036/lm3630a_warm_light 2>/dev/null");
+                try {
+                    String outC = resC != null ? resC.stdout : null;
+                    String outW = resW != null ? resW.stdout : null;
+                    if (outC != null && !outC.trim().isEmpty()) lightState[0] = Integer.parseInt(outC.trim());
+                    if (outW != null && !outW.trim().isEmpty()) lightState[1] = Integer.parseInt(outW.trim());
+                } catch (Exception ignored) {}
+                mainHandler.post(updateUi);
+            }
+        }).start();
+
+        addSectionContent(card);
+        updateUi.run();
     }
 
     // ── addDebloatToggle: toggle + per-package checkbox selector ──────────

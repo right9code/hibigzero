@@ -3,27 +3,41 @@ package com.right9code.hibigzero;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.util.Log;
 
 /**
  * Wakes on charger attach/detach and on the charge-limit poll alarm.
  *
- * Registered in the manifest rather than dynamically: ACTION_POWER_CONNECTED and
- * ACTION_POWER_DISCONNECTED are on the implicit-broadcast exemption list, so they
- * are still delivered after the process has been killed. That matters, because
- * attaching the charger has to resume charging even when nothing else of ours is
- * alive - otherwise a switch left "off" would look like a broken charger.
+ * Uses goAsync() to ensure the background thread finishes executing
+ * the required root sysfs commands before Android reaps the broadcast transaction.
  */
 public class PowerReceiver extends BroadcastReceiver {
+    private static final String TAG = "PowerReceiver";
+
     @Override
-    public void onReceive(Context context, Intent intent) {
-        String action = intent.getAction();
-        if (action == null) return;
-        if (ChargeLimitController.ACTION_TICK.equals(action)) {
-            ChargeLimitController.onTick(context);
-        } else if (Intent.ACTION_POWER_CONNECTED.equals(action)) {
-            ChargeLimitController.onPowerEvent(context, true);
-        } else if (Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
-            ChargeLimitController.onPowerEvent(context, false);
-        }
+    public void onReceive(final Context context, final Intent intent) {
+        if (intent == null || intent.getAction() == null) return;
+        final String action = intent.getAction();
+        final PendingResult pendingResult = goAsync();
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (ChargeLimitController.ACTION_TICK.equals(action)) {
+                        ChargeLimitController.onTickSync(context);
+                    } else if (Intent.ACTION_POWER_CONNECTED.equals(action)) {
+                        ChargeLimitController.onPowerEventSync(context, true);
+                    } else if (Intent.ACTION_POWER_DISCONNECTED.equals(action)) {
+                        ChargeLimitController.onPowerEventSync(context, false);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error in PowerReceiver: " + e.getMessage(), e);
+                } finally {
+                    ShellUtils.flushLog();
+                    pendingResult.finish();
+                }
+            }
+        }).start();
     }
 }

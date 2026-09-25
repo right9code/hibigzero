@@ -89,14 +89,10 @@ public class ChargeLimitController {
 
     // ── Entry points ──────────────────────────────────────────────────────
 
-    /** Plugged or unplugged. Registered in the manifest, so this also wakes the
-     *  app when the charger is attached to a killed process. */
-    public static void onPowerEvent(Context ctx, boolean plugged) {
+    /** Synchronous power event called from PowerReceiver background thread. */
+    public static void onPowerEventSync(Context ctx, boolean plugged) {
         final Context app = ctx.getApplicationContext();
         refreshConfig(app);
-        // Dry run: leave the switch completely alone. Toggling it here would be a
-        // device change, which is the one thing dry-run promises not to do. What the
-        // card reports comes from reading the node, so it stays truthful either way.
         if (ConfigManager.isDryRun()) {
             cancelTick(app);
             ShellUtils.appendLog("Charge limit: DRY-RUN - charging switch left untouched");
@@ -104,37 +100,24 @@ public class ChargeLimitController {
             return;
         }
         if (!plugged) {
-            // Charging must work again the moment the cable comes out.
             holding = false;
             stopStreak = 0;
             cancelTick(app);
             note("unplugged - charging restored");
             ShellUtils.appendLog("Charge limit: unplugged, charging restored");
             Log.i(TAG, "unplugged: resuming charging, polling stopped");
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    ShellUtils.execRoot(ConfigManager.getChargeResumeCmd());
-                }
-            }).start();
+            ShellUtils.execRoot(ConfigManager.getChargeResumeCmd());
             return;
         }
-        // Plugged in: allow charging first, then decide. In this order a replug can
-        // never be silently refused because the switch was still off.
         holding = false;
         stopStreak = 0;
         Log.i(TAG, "plugged in: charging allowed, target " + target);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                ShellUtils.execRoot(ConfigManager.getChargeResumeCmd());
-                evaluateAndReschedule(app);
-            }
-        }).start();
+        ShellUtils.execRoot(ConfigManager.getChargeResumeCmd());
+        evaluateAndReschedule(app);
     }
 
-    /** The periodic poll. Only ever scheduled while plugged in and enabled. */
-    public static void onTick(Context ctx) {
+    /** Synchronous tick called from PowerReceiver background thread. */
+    public static void onTickSync(Context ctx) {
         final Context app = ctx.getApplicationContext();
         refreshConfig(app);
         if (ConfigManager.isDryRun()) {
@@ -147,10 +130,27 @@ public class ChargeLimitController {
             Log.i(TAG, "tick: stopping poll (enabled=" + enabled + ")");
             return;
         }
+        evaluateAndReschedule(app);
+    }
+
+    /** Plugged or unplugged asynchronous fallback. */
+    public static void onPowerEvent(Context ctx, final boolean plugged) {
+        final Context app = ctx.getApplicationContext();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                evaluateAndReschedule(app);
+                onPowerEventSync(app, plugged);
+            }
+        }).start();
+    }
+
+    /** The periodic poll asynchronous fallback. */
+    public static void onTick(Context ctx) {
+        final Context app = ctx.getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                onTickSync(app);
             }
         }).start();
     }

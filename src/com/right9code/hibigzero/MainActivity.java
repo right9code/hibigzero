@@ -538,13 +538,7 @@ public class MainActivity extends Activity {
             "[ -f /system/bin/start_uart2serport.sh ] && [ -z \"$(getprop sys.init.updatable_crashing)\" ] && echo 'STUBBED_OK' || echo 'CRASH_LOOP'",
             logDrawer);
 
-        addToggle("KERNEL_SENSOR", "KERNEL_SENSOR",
-            "Lock rotation, disable 50Hz sensor polling, PowerHAL powersave",
-            false,
-            "settings put system accelerometer_rotation 0 2>/dev/null; settings put system user_rotation 0 2>/dev/null; device_config put power face_down_detector_enabled false 2>/dev/null; echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null; echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/ntc_disable_nafg 2>/dev/null; setprop vendor.powerhal.smart.powersave 1 2>/dev/null; setprop persist.vendor.powerhal.mode 1 2>/dev/null",
-            "settings put system accelerometer_rotation 1 2>/dev/null; device_config put power face_down_detector_enabled true 2>/dev/null; setprop vendor.powerhal.smart.powersave 0 2>/dev/null",
-            "settings get system accelerometer_rotation",
-            logDrawer);
+        addSensorsControlCard(logDrawer);
 
         addToggle("ANIMATIONS_0", "DISABLE_ANIMATIONS",
             "Window, transition, animator scales to 0.0x for crisp E-ink",
@@ -1859,6 +1853,305 @@ public class MainActivity extends Activity {
             pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
             pillBtn.setTextColor(Color.BLACK);
         }
+    }
+
+    // ── addSensorsControlCard: Master toggle + modular individual sensor controls ──
+    private void addSensorsControlCard(final TextView logDrawer) {
+        final ConfigManager.SensorItem[] sensors = ConfigManager.SENSORS;
+        final CheckBox[] checkBoxes = new CheckBox[sensors.length];
+        final TextView[] markers = new TextView[sensors.length];
+
+        // Main card
+        final LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        card.setLayoutParams(clp);
+        card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+        // Top row: Title + Master Pill
+        LinearLayout topRow = new LinearLayout(this);
+        topRow.setOrientation(LinearLayout.HORIZONTAL);
+        topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView tTitle = new TextView(this);
+        tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tTitle.setText("SENSOR_CONTROLS");
+        setSp(tTitle, 12);
+        tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        tTitle.setTextColor(Color.BLACK);
+
+        final TextView masterPill = new TextView(this);
+        masterPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(masterPill, 12);
+        masterPill.setGravity(Gravity.CENTER);
+        masterPill.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+        topRow.addView(tTitle);
+        topRow.addView(masterPill);
+        card.addView(topRow);
+
+        // Description
+        TextView tDesc = new TextView(this);
+        tDesc.setText("Mute background sensor polling (Auto-rotate, Face-down, Ambient light, Tilt wake, Proximity, Fuel gauge). Saves battery during active use.");
+        setSp(tDesc, 11);
+        tDesc.setTypeface(Typeface.DEFAULT);
+        tDesc.setTextColor(Color.BLACK);
+        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
+        card.addView(tDesc);
+
+        // Summary + Action Buttons Row
+        LinearLayout actionRow = new LinearLayout(this);
+        actionRow.setOrientation(LinearLayout.HORIZONTAL);
+        actionRow.setGravity(Gravity.CENTER_VERTICAL);
+        actionRow.setPadding(0, dpToPx(4), 0, 0);
+
+        final TextView summaryLabel = new TextView(this);
+        summaryLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(summaryLabel, 10);
+        summaryLabel.setTextColor(Color.BLACK);
+        LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        summaryLabel.setLayoutParams(sumLp);
+        actionRow.addView(summaryLabel);
+
+        final Button muteAllBtn = new Button(this);
+        setSp(muteAllBtn, 10);
+        muteAllBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        styleEinkButton(muteAllBtn, true);
+        muteAllBtn.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        muteAllBtn.setMinimumHeight(0);
+        muteAllBtn.setMinimumWidth(0);
+        muteAllBtn.setMinWidth(0);
+        muteAllBtn.setMinHeight(0);
+        LinearLayout.LayoutParams mblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mblp.setMarginEnd(dpToPx(6));
+        muteAllBtn.setLayoutParams(mblp);
+        actionRow.addView(muteAllBtn);
+
+        final Button toggleExpandBtn = new Button(this);
+        toggleExpandBtn.setText("[SELECT SENSORS ▼]");
+        setSp(toggleExpandBtn, 10);
+        toggleExpandBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        styleEinkButton(toggleExpandBtn, false);
+        toggleExpandBtn.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+        toggleExpandBtn.setMinimumHeight(0);
+        toggleExpandBtn.setMinimumWidth(0);
+        toggleExpandBtn.setMinWidth(0);
+        toggleExpandBtn.setMinHeight(0);
+        actionRow.addView(toggleExpandBtn);
+
+        card.addView(actionRow);
+        addSectionContent(card);
+
+        // Collapsible Dropdown / Selector Panel
+        final LinearLayout selectorPanel = new LinearLayout(this);
+        selectorPanel.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        splp.setMargins(dpToPx(8), 0, dpToPx(8), dpToPx(4));
+        selectorPanel.setLayoutParams(splp);
+        selectorPanel.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+        selectorPanel.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
+        selectorPanel.setVisibility(View.GONE);
+
+        // Header inside panel
+        TextView panelHeader = new TextView(this);
+        panelHeader.setText("INDIVIDUAL SENSOR CONTROLS");
+        panelHeader.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(panelHeader, 11);
+        panelHeader.setTextColor(Color.BLACK);
+        panelHeader.setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(6));
+        selectorPanel.addView(panelHeader);
+
+        // Helper to update overall UI state
+        final Runnable updateUiState = new Runnable() {
+            @Override
+            public void run() {
+                int activeCount = 0;
+                for (int i = 0; i < sensors.length; i++) {
+                    if ("1".equals(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal))) {
+                        activeCount++;
+                    }
+                }
+                if (activeCount == 0) {
+                    masterPill.setText("[ ALL MUTED ]");
+                    masterPill.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+                    masterPill.setTextColor(Color.WHITE);
+                    muteAllBtn.setText("RESTORE");
+                    summaryLabel.setText("0/6 active (Max Savings)");
+                } else if (activeCount == sensors.length) {
+                    masterPill.setText("[ ALL ACTIVE ]");
+                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+                    masterPill.setTextColor(Color.BLACK);
+                    muteAllBtn.setText("MUTE ALL");
+                    summaryLabel.setText("6/6 active (Stock)");
+                } else {
+                    masterPill.setText("[ " + activeCount + "/6 ACTIVE ]");
+                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+                    masterPill.setTextColor(Color.BLACK);
+                    muteAllBtn.setText("MUTE ALL");
+                    summaryLabel.setText(activeCount + "/6 active (Custom)");
+                }
+            }
+        };
+
+        // Populate sensor rows in panel
+        for (int i = 0; i < sensors.length; i++) {
+            final int idx = i;
+            final ConfigManager.SensorItem item = sensors[i];
+            final boolean active = "1".equals(currentConfig.getProperty(item.key, item.defaultVal));
+
+            LinearLayout itemRow = new LinearLayout(this);
+            itemRow.setOrientation(LinearLayout.VERTICAL);
+            itemRow.setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(6));
+
+            LinearLayout headerRow = new LinearLayout(this);
+            headerRow.setOrientation(LinearLayout.HORIZONTAL);
+            headerRow.setGravity(Gravity.CENTER_VERTICAL);
+
+            final TextView marker = new TextView(this);
+            markers[idx] = marker;
+            marker.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(marker, 11);
+            marker.setPadding(dpToPx(4), 0, dpToPx(4), 0);
+            marker.setText(active ? "[X]" : "[ ]");
+            marker.setTextColor(Color.BLACK);
+
+            final CheckBox cb = new CheckBox(this);
+            checkBoxes[idx] = cb;
+            cb.setText(item.title);
+            cb.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(cb, 10);
+            cb.setTextColor(Color.BLACK);
+            cb.setButtonDrawable(null);
+            cb.setBackground(null);
+            cb.setChecked(active);
+
+            headerRow.addView(marker);
+            headerRow.addView(cb);
+            itemRow.addView(headerRow);
+
+            TextView descView = new TextView(this);
+            descView.setText(item.desc);
+            setSp(descView, 9);
+            descView.setTextColor(Color.BLACK);
+            descView.setPadding(dpToPx(24), 0, dpToPx(4), dpToPx(2));
+            itemRow.addView(descView);
+
+            cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                    marker.setText(isChecked ? "[X]" : "[ ]");
+                    currentConfig.setProperty(item.key, isChecked ? "1" : "0");
+                    ConfigManager.saveConfig(currentConfig);
+                    updateUiState.run();
+
+                    final String cmd = ConfigManager.getSensorApplyCmd(item.key, isChecked);
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            ShellUtils.execRootAction(cmd);
+                            ShellUtils.appendLog("Sensor " + item.title + " set to " + (isChecked ? "ENABLED" : "DISABLED"));
+                            mainHandler.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (logDrawer != null && logDrawer.getVisibility() == View.VISIBLE) {
+                                        logDrawer.setText(ShellUtils.readLog(15));
+                                    }
+                                }
+                            });
+                        }
+                    }).start();
+                }
+            });
+
+            headerRow.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    cb.toggle();
+                }
+            });
+
+            selectorPanel.addView(itemRow);
+        }
+
+        // Master Pill and MUTE ALL button action
+        final View.OnClickListener masterToggleListener = new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int activeCount = 0;
+                for (int i = 0; i < sensors.length; i++) {
+                    if ("1".equals(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal))) {
+                        activeCount++;
+                    }
+                }
+                final boolean doMute = (activeCount > 0);
+                if (doMute) {
+                    // Save previous state string: e.g. "1,0,1,0,0,1"
+                    StringBuilder prevSb = new StringBuilder();
+                    for (int i = 0; i < sensors.length; i++) {
+                        if (i > 0) prevSb.append(",");
+                        prevSb.append(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal));
+                        currentConfig.setProperty(sensors[i].key, "0");
+                        if (checkBoxes[i] != null) checkBoxes[i].setChecked(false);
+                    }
+                    currentConfig.setProperty("SENSOR_PREV_STATE", prevSb.toString());
+                    currentConfig.setProperty("SENSOR_ALL_MUTE", "1");
+                } else {
+                    // Restore previous state
+                    String prev = currentConfig.getProperty("SENSOR_PREV_STATE", "");
+                    String[] parts = (prev != null && !prev.isEmpty()) ? prev.split(",") : new String[0];
+                    for (int i = 0; i < sensors.length; i++) {
+                        String restoredVal = (i < parts.length && !parts[i].isEmpty()) ? parts[i] : "1";
+                        currentConfig.setProperty(sensors[i].key, restoredVal);
+                        if (checkBoxes[i] != null) checkBoxes[i].setChecked("1".equals(restoredVal));
+                    }
+                    currentConfig.setProperty("SENSOR_ALL_MUTE", "0");
+                }
+                ConfigManager.saveConfig(currentConfig);
+                updateUiState.run();
+
+                final String fullCmd = ConfigManager.buildAllSensorsApplyCmd(currentConfig);
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        ShellUtils.execRootAction(fullCmd);
+                        ShellUtils.appendLog(doMute ? "All sensors muted (max savings applied)" : "Sensors unmuted (previous configuration restored)");
+                        mainHandler.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (logDrawer != null && logDrawer.getVisibility() == View.VISIBLE) {
+                                    logDrawer.setText(ShellUtils.readLog(15));
+                                }
+                            }
+                        });
+                    }
+                }).start();
+            }
+        };
+
+        masterPill.setOnClickListener(masterToggleListener);
+        muteAllBtn.setOnClickListener(masterToggleListener);
+
+        toggleExpandBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (selectorPanel.getVisibility() == View.VISIBLE) {
+                    selectorPanel.setVisibility(View.GONE);
+                    toggleExpandBtn.setText("[SELECT SENSORS ▼]");
+                    styleEinkButton(toggleExpandBtn, false);
+                } else {
+                    selectorPanel.setVisibility(View.VISIBLE);
+                    toggleExpandBtn.setText("[HIDE SENSORS ▲]");
+                    styleEinkButton(toggleExpandBtn, true);
+                }
+            }
+        });
+
+        addSectionContent(selectorPanel);
+        updateUiState.run();
     }
 
     // ── addDebloatToggle: toggle + per-package checkbox selector ──────────

@@ -165,16 +165,8 @@ public class BootReceiver extends BroadcastReceiver {
         if ("1".equals(cfg.getProperty("SUPPRESS_ALARMS"))) {
             ShellUtils.execRootAction(ConfigManager.getSuppressGmsAlarmsCmd(true));
         }
-        // 9. Kernel & Sensor
-        if ("1".equals(cfg.getProperty("KERNEL_SENSOR"))) {
-            ShellUtils.execRootAction("settings put system accelerometer_rotation 0 2>/dev/null; " +
-                "settings put system user_rotation 0 2>/dev/null; " +
-                "device_config put power face_down_detector_enabled false 2>/dev/null; " +
-                "echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null; " +
-                "echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/ntc_disable_nafg 2>/dev/null; " +
-                "setprop vendor.powerhal.smart.powersave 1 2>/dev/null; " +
-                "setprop persist.vendor.powerhal.mode 1 2>/dev/null");
-        }
+        // 9. Kernel & Sensor Settings
+        ShellUtils.execRootAction(ConfigManager.buildAllSensorsApplyCmd(cfg));
         // 10. Governor Profile & PPM Uncap
         String govProfile = cfg.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
         String hotplug4   = cfg.getProperty("HOTPLUG_4_CORES", "0");

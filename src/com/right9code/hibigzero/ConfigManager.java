@@ -20,6 +20,8 @@ public class ConfigManager {
     public static final String[] CONF_KEYS = {
         "FIX_UART","GOOGLE_STACK","BIGME_BLOAT","MTK_CELLULAR","AOSP_STUBS",
         "LOCKDOWN_GBOARD","AGGRESSIVE_DOZE","SUPPRESS_ALARMS","KERNEL_SENSOR",
+        "SENSOR_ALL_MUTE","SENSOR_PREV_STATE","SENSOR_ACCEL_ROTATION","SENSOR_FACE_DOWN",
+        "SENSOR_LIGHT_AUTO","SENSOR_TILT_WAKE","SENSOR_PROXIMITY","SENSOR_NAFG_GAUGE",
         "BATTERY_CAP_85","CHARGE_LIMIT_PCT","GOVERNOR_PROFILE","CPU_OPTIMIZER","HOTPLUG_4_CORES","WIFI_SLEEP_ZERO",
         "SLEEP_GOVERNOR","SLEEP_GOVERNOR_ENABLED",
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
@@ -508,6 +510,11 @@ public class ConfigManager {
         p.setProperty("AGGRESSIVE_DOZE", "0");
         p.setProperty("SUPPRESS_ALARMS", "0");
         p.setProperty("KERNEL_SENSOR", "0");
+        p.setProperty("SENSOR_ALL_MUTE", "0");
+        p.setProperty("SENSOR_PREV_STATE", "");
+        for (SensorItem item : SENSORS) {
+            p.setProperty(item.key, item.defaultVal);
+        }
         // Enable flag for the charge ceiling. The key name is legacy and narrower
         // than the feature: the target lives in CHARGE_LIMIT_PCT. Kept because it
         // already exists in people's configs and means the same thing, so an old
@@ -1245,5 +1252,89 @@ public class ConfigManager {
             case 50: return "NEVER";
             default: return "B:" + bucket;
         }
+    }
+
+    // ── Modular Sensor Management ──────────────────────────────────────────
+    public static class SensorItem {
+        public final String key;
+        public final String title;
+        public final String desc;
+        public final String defaultVal; // "0" = muted/disabled, "1" = active
+
+        public SensorItem(String key, String title, String desc, String defaultVal) {
+            this.key = key;
+            this.title = title;
+            this.desc = desc;
+            this.defaultVal = defaultVal;
+        }
+    }
+
+    public static final SensorItem[] SENSORS = new SensorItem[] {
+        new SensorItem("SENSOR_ACCEL_ROTATION", "Auto-Rotate / Accelerometer",
+            "Polls accelerometer at 50Hz to auto-rotate display. Disabling locks orientation.", "0"),
+        new SensorItem("SENSOR_FACE_DOWN", "Face-Down Sleep Trigger",
+            "PowerManager orientation checking to enter sleep when placed face-down.", "0"),
+        new SensorItem("SENSOR_LIGHT_AUTO", "Ambient Light (Auto-Brightness)",
+            "Optical lux sensor continuous sampling for dynamic screen backlight adjustment.", "0"),
+        new SensorItem("SENSOR_TILT_WAKE", "Tilt & Wake Gestures (Lift-to-Wake)",
+            "Hardware sensor interrupts waking CPU on movement or pick-up gestures.", "0"),
+        new SensorItem("SENSOR_PROXIMITY", "Proximity & In-Call Sensor",
+            "Infrared proximity sensor polling for ear detection during calls.", "0"),
+        new SensorItem("SENSOR_NAFG_GAUGE", "Kernel NAFG Gauge Polling",
+            "MediaTek PMIC battery fuel gauge continuous high-frequency sampling.", "0")
+    };
+
+    public static String getSensorApplyCmd(String key, boolean enable) {
+        if ("SENSOR_ACCEL_ROTATION".equals(key)) {
+            return enable ? "settings put system accelerometer_rotation 1 2>/dev/null"
+                          : "settings put system accelerometer_rotation 0 2>/dev/null; settings put system user_rotation 0 2>/dev/null";
+        } else if ("SENSOR_FACE_DOWN".equals(key)) {
+            return enable ? "device_config put power face_down_detector_enabled true 2>/dev/null"
+                          : "device_config put power face_down_detector_enabled false 2>/dev/null";
+        } else if ("SENSOR_LIGHT_AUTO".equals(key)) {
+            return enable ? "settings put system screen_brightness_mode 1 2>/dev/null"
+                          : "settings put system screen_brightness_mode 0 2>/dev/null";
+        } else if ("SENSOR_TILT_WAKE".equals(key)) {
+            return enable ? "settings put secure wake_gesture_enabled 1 2>/dev/null; settings put secure doze_tilt_to_wake 1 2>/dev/null; settings put secure doze_wake_screen_gesture 1 2>/dev/null"
+                          : "settings put secure wake_gesture_enabled 0 2>/dev/null; settings put secure doze_tilt_to_wake 0 2>/dev/null; settings put secure doze_wake_screen_gesture 0 2>/dev/null";
+        } else if ("SENSOR_PROXIMITY".equals(key)) {
+            return enable ? "settings put system proximity_sensor 1 2>/dev/null"
+                          : "settings put system proximity_sensor 0 2>/dev/null";
+        } else if ("SENSOR_NAFG_GAUGE".equals(key)) {
+            return enable ? "echo 1 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null; echo 1 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/ntc_disable_nafg 2>/dev/null"
+                          : "echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null; echo 0 > /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/ntc_disable_nafg 2>/dev/null";
+        }
+        return "";
+    }
+
+    public static String getSensorProbeCmd(String key) {
+        if ("SENSOR_ACCEL_ROTATION".equals(key)) {
+            return "settings get system accelerometer_rotation 2>/dev/null";
+        } else if ("SENSOR_FACE_DOWN".equals(key)) {
+            return "device_config get power face_down_detector_enabled 2>/dev/null";
+        } else if ("SENSOR_LIGHT_AUTO".equals(key)) {
+            return "settings get system screen_brightness_mode 2>/dev/null";
+        } else if ("SENSOR_TILT_WAKE".equals(key)) {
+            return "settings get secure wake_gesture_enabled 2>/dev/null";
+        } else if ("SENSOR_PROXIMITY".equals(key)) {
+            return "settings get system proximity_sensor 2>/dev/null";
+        } else if ("SENSOR_NAFG_GAUGE".equals(key)) {
+            return "cat /sys/devices/platform/1000d000.pwrap/1000d000.pwrap:main_pmic/mt6357-gauge/disable_nafg 2>/dev/null";
+        }
+        return "";
+    }
+
+    public static String buildAllSensorsApplyCmd(Properties cfg) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("setprop vendor.powerhal.smart.powersave 1 2>/dev/null; ");
+        sb.append("setprop persist.vendor.powerhal.mode 1 2>/dev/null; ");
+        for (SensorItem item : SENSORS) {
+            boolean enable = "1".equals(cfg.getProperty(item.key, item.defaultVal));
+            String cmd = getSensorApplyCmd(item.key, enable);
+            if (!cmd.isEmpty()) {
+                sb.append(cmd).append("; ");
+            }
+        }
+        return sb.toString();
     }
 }

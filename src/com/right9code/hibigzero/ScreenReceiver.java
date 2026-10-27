@@ -68,7 +68,17 @@ public class ScreenReceiver extends BroadcastReceiver {
                             ShutdownAlarmReceiver.scheduleAlarmWithConfig(context);
                             Log.i("ScreenReceiver", "Shutdown alarm scheduled");
                         }
+                        // Instant deep doze on screen-off
+                        if ("1".equals(cfg.getProperty("INSTANT_DEEP_DOZE", "0"))) {
+                            ShellUtils.execRootAction(ConfigManager.getInstantDeepDozeCmd(true));
+                            Log.i("ScreenReceiver", "Instant Deep Doze enforced");
+                        }
                     } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
+                        // Unforce deep idle when screen turns back on
+                        if ("1".equals(cfg.getProperty("INSTANT_DEEP_DOZE", "0"))) {
+                            ShellUtils.execRootAction(ConfigManager.getInstantDeepDozeCmd(false));
+                            Log.i("ScreenReceiver", "Instant Deep Doze unforced");
+                        }
                         // Cancel shutdown alarm — user is active
                         ShutdownAlarmReceiver.cancelAlarm(context);
                         ShutdownAlarmReceiver.clearScreenOff(context);

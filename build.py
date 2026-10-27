@@ -35,7 +35,17 @@ def read_manifest_version():
 VERSION_NAME = read_manifest_version()
 APK_NAME = f"HiBigZero-v{VERSION_NAME}-release.apk"
 
-JAVAC_BIN     = "/usr/bin/javac"
+def find_javac():
+    candidate = shutil.which("javac")
+    if candidate and os.path.exists(candidate):
+        return candidate
+    local_jdk = os.path.expanduser("~/.local/share/jdk17/bin/javac")
+    if os.path.exists(local_jdk):
+        return local_jdk
+    return "/usr/bin/javac"
+
+
+JAVAC_BIN     = find_javac()
 AAPT_BIN      = "/home/right9zzz/Android/Sdk/build-tools/35.0.0/aapt"
 D8_BIN        = "/home/right9zzz/Android/Sdk/build-tools/35.0.0/d8"
 ZIPALIGN_BIN  = "/home/right9zzz/Android/Sdk/build-tools/35.0.0/zipalign"

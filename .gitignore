@@ -47,3 +47,4 @@ diag/
 releases/*.apk
 releases/*.apk.idsig
 releases/*.sha256
+.tau/

@@ -37,6 +37,8 @@ public class NetGuardTest {
         check("https://github-releases.githubusercontent.com/123/456", true);
         check("https://GITHUB.COM/x.apk", true);
         check("https://github.com:443/x.apk", true);
+        check("https://www.whatsapp.com/android/current/WhatsApp.apk", true);
+        check("https://whatsapp.com/android/current/WhatsApp.apk", true);
 
         System.out.println("--- must DENY (plaintext downgrade) ---");
         check("http://github.com/x.apk", false);

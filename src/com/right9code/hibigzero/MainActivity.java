@@ -33,10 +33,8 @@ public class MainActivity extends Activity {
     private ScrollView mainScrollView;
     private int activeTab = 0;
     private Handler mainHandler = new Handler(Looper.getMainLooper());
-    private TextView headerBatteryView;
     // Banner mode marker: shows DRY RUN when nothing is being applied.
     private TextView authorView;
-    private Runnable headerBatteryUpdater;
 
     /** HiBreak Li-ion pack capacity per spec sheet (used for runtime projections). */
     private static final double BATTERY_CAPACITY_MAH = 2100.0;
@@ -72,6 +70,18 @@ public class MainActivity extends Activity {
     private Button tabSysBtn, tabAppsBtn, tabDiagBtn;
     private View tabSysIndicator, tabAppsIndicator, tabDiagIndicator;
 
+    // Sub-tabs inside Tab 0 (SYSTEM)
+    private int currentSubTab = 0; // 0 = READING, 1 = SENSORS, 2 = STANDBY, 3 = DEBLOAT, 4 = APPS
+    private LinearLayout pinnedBottomContainer = null;
+    private TextView telemetrySensorsView = null;
+    private TextView telemetryDozeView = null;
+    private TextView telemetryCpuView = null;
+    private TextView telemetryBattView = null;
+
+    private interface ChipSelectListener {
+        void onChipSelected(String value);
+    }
+
     // Helper: apply system-scaled sp text size (respects user font scale)
     private void setSp(TextView tv, float sp) {
         tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp);
@@ -102,6 +112,166 @@ public class MainActivity extends Activity {
             gd.setCornerRadius(dpToPx(cornerRadiusDp));
         }
         return gd;
+    }
+
+    private LinearLayout createStepperChips(String[] labels, final String[] values, String currentVal, final ChipSelectListener listener) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.topMargin = dpToPx(6);
+        rlp.bottomMargin = dpToPx(4);
+        row.setLayoutParams(rlp);
+
+        final TextView[] chipViews = new TextView[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            final TextView chip = new TextView(this);
+            chip.setText(labels[i]);
+            chip.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(chip, 10);
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dpToPx(4), dpToPx(6), dpToPx(4), dpToPx(6));
+
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            if (i > 0) clp.leftMargin = dpToPx(4);
+            chip.setLayoutParams(clp);
+
+            boolean isSelected = values[i].equals(currentVal);
+            styleChip(chip, isSelected);
+
+            chip.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    for (int j = 0; j < chipViews.length; j++) {
+                        styleChip(chipViews[j], j == idx);
+                    }
+                    listener.onChipSelected(values[idx]);
+                }
+            });
+
+            chipViews[i] = chip;
+            row.addView(chip);
+        }
+        return row;
+    }
+
+    private void styleChip(TextView chip, boolean isSelected) {
+        if (isSelected) {
+            chip.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, dpToPx(2)));
+            chip.setTextColor(Color.WHITE);
+        } else {
+            chip.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
+            chip.setTextColor(Color.BLACK);
+        }
+    }
+
+    private TextView createTelemetryText(String initial) {
+        TextView tv = new TextView(this);
+        tv.setText(initial);
+        tv.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(tv, 9.5f);
+        tv.setTextColor(Color.WHITE);
+        tv.setGravity(Gravity.CENTER);
+        tv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        tv.setPadding(dpToPx(2), dpToPx(3), dpToPx(2), dpToPx(3));
+        return tv;
+    }
+
+    private void updateTelemetryStrip() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ShellUtils.CommandResult res = ShellUtils.execRoot(
+                    "echo \"$(cat /sys/devices/system/cpu/cpu*/online 2>/dev/null | grep -c 1)|" +
+                    "$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null)|" +
+                    "$(dumpsys deviceidle 2>/dev/null | grep -o 'mState=[A-Z_]*' | head -1)|" +
+                    "$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)|" +
+                    "$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)\"", false);
+                String out = (res != null && res.stdout != null) ? res.stdout.trim() : "";
+                String[] parts = out.split("\\|", -1);
+                int onlineCount = 8;
+                try { if (parts.length > 0 && !parts[0].isEmpty()) onlineCount = Integer.parseInt(parts[0]); } catch (Exception ignored) {}
+                String freqStr = (parts.length > 1 && !parts[1].isEmpty()) ? (Integer.parseInt(parts[1]) / 1000 + "MHz") : "--";
+                String dozeState = (parts.length > 2 && !parts[2].isEmpty()) ? parts[2].replace("mState=", "") : "ACTIVE";
+                String capStr = (parts.length > 3 && !parts[3].isEmpty()) ? parts[3] + "%" : "--";
+                int curMa = (parts.length > 4 && !parts[4].isEmpty()) ? parseCurrent(parts[4]) : 0;
+
+                int activeSensors = 0;
+                for (ConfigManager.SensorItem si : ConfigManager.SENSORS) {
+                    if ("1".equals(currentConfig.getProperty(si.key, si.defaultVal))) activeSensors++;
+                }
+
+                final String cpuTxt = onlineCount + "C@" + freqStr;
+                final String dozeTxt = "DOZE:" + ("1".equals(currentConfig.getProperty("INSTANT_DEEP_DOZE", "0")) ? "Instant" : dozeState);
+                final String sensTxt = "SENS:" + (activeSensors == 0 ? "Muted" : activeSensors + "/6");
+                final String battTxt = capStr + "(" + (curMa >= 0 ? "+" : "") + curMa + "mA)";
+
+                mainHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (telemetryCpuView != null) telemetryCpuView.setText(cpuTxt);
+                        if (telemetryDozeView != null) telemetryDozeView.setText(dozeTxt);
+                        if (telemetrySensorsView != null) telemetrySensorsView.setText(sensTxt);
+                        if (telemetryBattView != null) telemetryBattView.setText(battTxt);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private TextView addShieldRow(LinearLayout parent, String label, final String configKey, final String onCmd, final String offCmd) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dpToPx(6), 0, dpToPx(6));
+
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTypeface(Typeface.DEFAULT);
+        setSp(tv, 10);
+        tv.setTextColor(Color.BLACK);
+        tv.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        row.addView(tv);
+
+        final TextView pillBtn = new TextView(this);
+        pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        setSp(pillBtn, 10);
+        pillBtn.setGravity(Gravity.CENTER);
+        pillBtn.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
+
+        boolean checked = "1".equals(currentConfig.getProperty(configKey, "0"));
+        updatePillView(pillBtn, checked);
+        row.addView(pillBtn);
+
+        final Runnable toggle = new Runnable() {
+            @Override
+            public void run() {
+                boolean cur = "1".equals(currentConfig.getProperty(configKey, "0"));
+                boolean next = !cur;
+                currentConfig.setProperty(configKey, next ? "1" : "0");
+                ConfigManager.saveConfig(currentConfig);
+                updatePillView(pillBtn, next);
+                final String cmd = next ? onCmd : offCmd;
+                if (cmd != null && !cmd.isEmpty()) {
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() { ShellUtils.execRootAction(cmd); }
+                    }).start();
+                }
+            }
+        };
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { toggle.run(); }
+        });
+        pillBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { toggle.run(); }
+        });
+
+        parent.addView(row);
+        return pillBtn;
     }
 
     static class AppItem {
@@ -189,6 +359,14 @@ public class MainActivity extends Activity {
         title.setTextColor(Color.WHITE);
         title.setLayoutParams(new LinearLayout.LayoutParams(
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        // Long-press title = APPLY ALL RULES (zero screen cost)
+        title.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                showApplyAllDialog();
+                return true;
+            }
+        });
         headerTop.addView(title);
 
         Button updateBtn = new Button(this);
@@ -244,13 +422,29 @@ public class MainActivity extends Activity {
         header.addView(author);
         updateDryRunBadge();
 
-        headerBatteryView = new TextView(this);
-        headerBatteryView.setText("Battery: reading...");
-        setSp(headerBatteryView, 12);
-        headerBatteryView.setTypeface(Typeface.DEFAULT);
-        headerBatteryView.setTextColor(Color.WHITE);
-        headerBatteryView.setPadding(0, dpToPx(2), 0, 0);
-        header.addView(headerBatteryView);
+        // ── Telemetry row (merged into header) ──────────────────────────────
+        LinearLayout telemRow = new LinearLayout(this);
+        telemRow.setOrientation(LinearLayout.HORIZONTAL);
+        telemRow.setPadding(0, dpToPx(4), 0, 0);
+        telemRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        telemetryCpuView = createTelemetryText("CPU: --");
+        telemetryDozeView = createTelemetryText("DOZE: --");
+        telemetrySensorsView = createTelemetryText("SENS: --");
+        telemetryBattView = createTelemetryText("BATT: --");
+
+        telemRow.addView(telemetryCpuView);
+        telemRow.addView(telemetryDozeView);
+        telemRow.addView(telemetrySensorsView);
+        telemRow.addView(telemetryBattView);
+
+        telemRow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) { updateTelemetryStrip(); }
+        });
+
+        header.addView(telemRow);
+        updateTelemetryStrip();
 
         // Boot confirmation (refreshed after a resume, which rewrites the stamp)
         bootStatusView = new TextView(this);
@@ -363,20 +557,26 @@ public class MainActivity extends Activity {
 
         contentContainer = new LinearLayout(this);
         contentContainer.setOrientation(LinearLayout.VERTICAL);
-        contentContainer.setPadding(0, 0, 0, dpToPx(40));
+        contentContainer.setPadding(0, 0, 0, dpToPx(16));
         mainScrollView.addView(contentContainer);
         root.addView(mainScrollView);
+
+        // ── Pinned Bottom Bar (Sub-tabs + Apply Button always visible on SYSTEM tab) ──
+        pinnedBottomContainer = new LinearLayout(this);
+        pinnedBottomContainer.setOrientation(LinearLayout.VERTICAL);
+        pinnedBottomContainer.setLayoutParams(new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        pinnedBottomContainer.setBackgroundColor(Color.WHITE);
+        root.addView(pinnedBottomContainer);
 
         setContentView(root);
         updateTabStyles();
         renderCurrentTab();
-        startHeaderBatteryUpdater();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (headerBatteryUpdater != null) mainHandler.removeCallbacks(headerBatteryUpdater);
         diagBatteryRunning = false;
         if (diagBatteryUpdater != null) mainHandler.removeCallbacks(diagBatteryUpdater);
         if (searchDebounceRunnable != null) mainHandler.removeCallbacks(searchDebounceRunnable);
@@ -397,33 +597,6 @@ public class MainActivity extends Activity {
         if (logDrawer != null && logDrawer.getVisibility() == View.VISIBLE) {
             logDrawer.setText(ShellUtils.readLog(15));
         }
-    }
-
-    // ── Header battery updater (30s) ─────────────────────────────────────────
-    private void startHeaderBatteryUpdater() {
-        headerBatteryUpdater = new Runnable() {
-            @Override
-            public void run() {
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        ShellUtils.CommandResult res = ShellUtils.execRoot(
-                            "echo \"$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)|$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)|$(cat /sys/class/power_supply/battery/status 2>/dev/null)\"", false);
-                        String[] parts = (res != null && res.stdout != null) ? res.stdout.trim().split("\\|", -1) : new String[0];
-                        String cap = (parts.length > 0 && !parts[0].isEmpty()) ? parts[0] : "?";
-                        int ma = (parts.length > 1) ? parseCurrent(parts[1]) : 0;
-                        String st = (parts.length > 2 && !parts[2].isEmpty()) ? " [" + parts[2] + "]" : "";
-                        final String txt = "Battery: " + cap + "%  " + ma + " mA" + st;
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() { headerBatteryView.setText(txt); }
-                        });
-                    }
-                }).start();
-                mainHandler.postDelayed(this, 30000);
-            }
-        };
-        mainHandler.post(headerBatteryUpdater);
     }
 
     private int parseCurrent(String raw) {
@@ -477,6 +650,10 @@ public class MainActivity extends Activity {
         if (diagBatteryUpdater != null) mainHandler.removeCallbacks(diagBatteryUpdater);
         updateTabStyles();
         contentContainer.removeAllViews();
+        if (pinnedBottomContainer != null) {
+            pinnedBottomContainer.removeAllViews();
+            pinnedBottomContainer.setVisibility(activeTab == 0 ? View.VISIBLE : View.GONE);
+        }
         if (activeTab == 0)      renderSystemControls();
         else if (activeTab == 1) renderAppDebloat();
         else                     renderDiagnostics();
@@ -520,602 +697,740 @@ public class MainActivity extends Activity {
         logDrawerView.setText("(log appears after first toggle)");
         final TextView logDrawer = logDrawerView;
 
-        // ─ Section: PROTECTION (self) ─────────────────────────────────────
-        // The manager cannot enforce anything if Android reaps it minutes after
-        // screen-off, so its own background rights are checked here and repaired
-        // on demand. Probed once at launch — deliberately not on a timer.
-        addSectionHeader("PROTECTION", "The manager must never restrict itself");
+        // ── 1. Manager Self-Protection Card (Collapsed by default to save screen space) ──
+        addSectionHeader("PROTECTION", "The manager must never restrict itself", false);
         addProtectionCard(logDrawer);
 
-        // ─ Section: HARDWARE ──────────────────────────────────────────────
-        addSectionHeader("HARDWARE");
+        // ── 3. Sub-Tabs Bar (Replaces 10-screen deep vertical scrolling) ───
+        final String[] subTabNames = {"READING", "SENSORS", "STANDBY", "DEBLOAT", "APPS"};
+        LinearLayout subTabBar = new LinearLayout(this);
+        subTabBar.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams stlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        stlp.setMargins(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(6));
+        subTabBar.setLayoutParams(stlp);
+        subTabBar.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
 
-        addToggle("FIX_UART", "FIX_UART",
-            "Kill runaway uart2serport daemon & clear early-boot crash latch",
-            false,
-            "setprop sys.init.updatable_crashing \"\" 2>/dev/null; setprop sys.init.updatable_crashing_process_name \"\" 2>/dev/null; setprop ctl.stop uart2serport 2>/dev/null; setprop persist.vendor.uart2serport.enable 0 2>/dev/null; kill -9 $(pidof uart2serport) 2>/dev/null; chmod 755 /system/bin/start_uart2serport.sh 2>/dev/null",
-            "setprop persist.vendor.uart2serport.enable 1 2>/dev/null",
-            "[ -f /system/bin/start_uart2serport.sh ] && [ -z \"$(getprop sys.init.updatable_crashing)\" ] && echo 'STUBBED_OK' || echo 'CRASH_LOOP'",
-            logDrawer);
+        for (int i = 0; i < subTabNames.length; i++) {
+            final int sIdx = i;
+            TextView sTab = new TextView(this);
+            sTab.setText(subTabNames[i]);
+            sTab.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(sTab, 11);
+            sTab.setGravity(Gravity.CENTER);
+            sTab.setPadding(dpToPx(4), dpToPx(8), dpToPx(4), dpToPx(8));
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+            sTab.setLayoutParams(tlp);
 
-        addSensorsControlCard(logDrawer);
+            boolean isCurrent = (currentSubTab == sIdx);
+            if (isCurrent) {
+                sTab.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
+                sTab.setTextColor(Color.WHITE);
+            } else {
+                sTab.setBackgroundColor(Color.TRANSPARENT);
+                sTab.setTextColor(Color.BLACK);
+            }
 
-        addToggle("ANIMATIONS_0", "DISABLE_ANIMATIONS",
-            "Window, transition, animator scales to 0.0x for crisp E-ink",
-            false,
-            "settings put global window_animation_scale 0.0 2>/dev/null; settings put global transition_animation_scale 0.0 2>/dev/null; settings put global animator_duration_scale 0.0 2>/dev/null; settings put global disable_window_blurs 1 2>/dev/null; setprop persist.sys.sf.disable_blurs 1 2>/dev/null",
-            "settings put global window_animation_scale 1.0 2>/dev/null; settings put global transition_animation_scale 1.0 2>/dev/null; settings put global animator_duration_scale 1.0 2>/dev/null; settings put global disable_window_blurs 0 2>/dev/null",
-            "settings get global window_animation_scale",
-            logDrawer);
-
-
-
-        // ── CAPACITIVE_KEYS: Freeze/Unfreeze ebook.launcher for side-button config ──
-        {
-            final String capPkg = "com.xrz.ebook.launcher";
-
-            // Card with 2dp solid black border
-            final LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
-            card.setLayoutParams(clp);
-            card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
-            card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
-
-            // Top row: title + pill
-            LinearLayout topRow = new LinearLayout(this);
-            topRow.setOrientation(LinearLayout.HORIZONTAL);
-            topRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            TextView tTitle = new TextView(this);
-            tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-            tTitle.setText("CAPACITIVE_KEYS");
-            setSp(tTitle, 12);
-            tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            tTitle.setTextColor(Color.BLACK);
-
-            final TextView pillBtn = new TextView(this);
-            pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(pillBtn, 12);
-            pillBtn.setGravity(Gravity.CENTER);
-            pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
-
-            topRow.addView(tTitle);
-            topRow.addView(pillBtn);
-            card.addView(topRow);
-
-            // Description
-            TextView descView = new TextView(this);
-            setSp(descView, 10);
-            descView.setTextColor(Color.BLACK);
-            descView.setText("Unfreeze Bigme launcher to configure Custom Keys");
-            descView.setPadding(0, dpToPx(4), 0, dpToPx(6));
-            card.addView(descView);
-
-            // Button row
-            LinearLayout btnRow = new LinearLayout(this);
-            btnRow.setOrientation(LinearLayout.HORIZONTAL);
-            btnRow.setGravity(Gravity.CENTER_VERTICAL);
-
-            final Button capToggleBtn = new Button(this);
-            setSp(capToggleBtn, 10);
-            capToggleBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            capToggleBtn.setTextColor(Color.BLACK);
-            capToggleBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
-            capToggleBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
-            LinearLayout.LayoutParams togLp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-            togLp.rightMargin = dpToPx(4);
-            capToggleBtn.setLayoutParams(togLp);
-            btnRow.addView(capToggleBtn);
-
-            final Button capOpenBtn = new Button(this);
-            setSp(capOpenBtn, 10);
-            capOpenBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            capOpenBtn.setText("OPEN SETTINGS");
-            capOpenBtn.setTextColor(Color.BLACK);
-            capOpenBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
-            capOpenBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
-            LinearLayout.LayoutParams openLp = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
-            capOpenBtn.setLayoutParams(openLp);
-            btnRow.addView(capOpenBtn);
-
-            card.addView(btnRow);
-
-            // Update UI state
-            final Runnable updateCapState = new Runnable() {
-                @Override
-                public void run() {
-                    boolean enabled = false;
-                    try {
-                        enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
-                    } catch (Exception e) { /* not installed */ }
-                    if (enabled) {
-                        pillBtn.setText("[ ACTIVE ]");
-                        pillBtn.setTextColor(Color.BLACK);
-                        pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
-                        capToggleBtn.setText("FREEZE");
-                        capOpenBtn.setEnabled(true);
-                        capOpenBtn.setAlpha(1.0f);
-                    } else {
-                        pillBtn.setText("[ FROZEN ]");
-                        pillBtn.setTextColor(Color.WHITE);
-                        pillBtn.setBackgroundColor(Color.BLACK);
-                        capToggleBtn.setText("UNFREEZE");
-                        capOpenBtn.setEnabled(false);
-                        capOpenBtn.setAlpha(0.4f);
-                    }
-                }
-            };
-            updateCapState.run();
-
-            capToggleBtn.setOnClickListener(new View.OnClickListener() {
+            sTab.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    boolean enabled = false;
-                    try {
-                        enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
-                    } catch (Exception e) { /* not installed */ }
-                    capToggleBtn.setEnabled(false);
-                    final boolean wasEnabled = enabled;
-                    new Thread(new Runnable() {
+                    currentSubTab = sIdx;
+                    activeTab = 0;
+                    renderCurrentTab();
+                    mainScrollView.post(new Runnable() {
+                        @Override
+                        public void run() { mainScrollView.scrollTo(0, 0); }
+                    });
+                }
+            });
+            subTabBar.addView(sTab);
+        }
+
+        if (pinnedBottomContainer != null) {
+            View borderTop = new View(this);
+            borderTop.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(2)));
+            borderTop.setBackgroundColor(Color.BLACK);
+            pinnedBottomContainer.addView(borderTop);
+            pinnedBottomContainer.addView(subTabBar);
+        } else {
+            contentContainer.addView(subTabBar);
+        }
+
+        // ── 4. Active Sub-Tab Content ──────────────────────────────────────
+        switch (currentSubTab) {
+            case 0: // ── READING ──
+                addSectionHeader("READING MODE", "Optimizations for active screen-on reading");
+
+                // Wake Governor with 3 inline stepper chips
+                {
+                    final LinearLayout wakeCard = new LinearLayout(this);
+                    wakeCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams wclp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    wclp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    wakeCard.setLayoutParams(wclp);
+                    wakeCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    wakeCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    TextView wTitle = new TextView(this);
+                    wTitle.setText("WAKE CPU GOVERNOR");
+                    setSp(wTitle, 12);
+                    wTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    wTitle.setTextColor(Color.BLACK);
+                    wakeCard.addView(wTitle);
+
+                    final TextView wDesc = new TextView(this);
+                    setSp(wDesc, 10);
+                    wDesc.setTextColor(Color.BLACK);
+                    wDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    wakeCard.addView(wDesc);
+
+                    final String[] wakeLabels = {"E-READER (4C)", "BALANCED (8C)", "STOCK"};
+                    final String[] wakeVals = {"ereader_battery", "schedutil_efficient", "stock"};
+                    final String curWake = currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
+
+                    final Runnable updateWakeDesc = new Runnable() {
                         @Override
                         public void run() {
-                            if (wasEnabled) {
-                                ShellUtils.execRootAction("pm disable-user --user 0 " + capPkg);
+                            String p = currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient");
+                            if ("ereader_battery".equals(p)) {
+                                wDesc.setText("4 Little cores (cpu0-3 @ 900-1351MHz). Big cores 4-7 offline. Zero leakage.");
+                            } else if ("stock".equals(p)) {
+                                wDesc.setText("Factory MediaTek policy (Policy 7 locked at 2.06GHz, all 8 cores).");
                             } else {
-                                ShellUtils.execRootAction("pm enable " + capPkg);
+                                wDesc.setText("Dynamic 8 cores (900-2200MHz PPM uncapped). Smooth multitasking.");
                             }
-                            mainHandler.post(new Runnable() {
+                        }
+                    };
+                    updateWakeDesc.run();
+
+                    wakeCard.addView(createStepperChips(wakeLabels, wakeVals, curWake, new ChipSelectListener() {
+                        @Override
+                        public void onChipSelected(String selected) {
+                            currentConfig.setProperty("GOVERNOR_PROFILE", selected);
+                            currentConfig.setProperty("HOTPLUG_4_CORES", "ereader_battery".equals(selected) ? "1" : "0");
+                            currentConfig.setProperty("CPU_OPTIMIZER", "stock".equals(selected) ? "0" : "1");
+                            ConfigManager.saveConfig(currentConfig);
+                            updateWakeDesc.run();
+                            ShellUtils.execRootAction(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
+                            if (!"stock".equals(selected)) {
+                                ShellUtils.execRootAction(ConfigManager.getCpuUncapCmd());
+                            }
+                            updateTelemetryStrip();
+                        }
+                    }));
+                    addSectionContent(wakeCard);
+                }
+
+                addToggle("TOUCH_BOOST_SAVER", "TOUCH_BOOST_SAVER",
+                    "Prevent 2.06GHz frequency spikes when tapping to flip pages (clamps EAS uclamp boost)",
+                    false,
+                    ConfigManager.getTouchBoostSaverCmd(true),
+                    ConfigManager.getTouchBoostSaverCmd(false),
+                    "cat /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null | grep -q 100000 && echo THROTTLED || echo DEFAULT",
+                    logDrawer);
+
+                addToggle("ANIMATIONS_0", "DISABLE_ANIMATIONS",
+                    "Window, transition, animator scales to 0.0x and blurs disabled for instant E-ink",
+                    false,
+                    "settings put global window_animation_scale 0.0 2>/dev/null; settings put global transition_animation_scale 0.0 2>/dev/null; settings put global animator_duration_scale 0.0 2>/dev/null; settings put global disable_window_blurs 1 2>/dev/null; setprop persist.sys.sf.disable_blurs 1 2>/dev/null",
+                    "settings put global window_animation_scale 1.0 2>/dev/null; settings put global transition_animation_scale 1.0 2>/dev/null; settings put global animator_duration_scale 1.0 2>/dev/null; settings put global disable_window_blurs 0 2>/dev/null",
+                    "settings get global window_animation_scale",
+                    logDrawer);
+
+                // Keys & Gestures
+                {
+                    final String capPkg = "com.xrz.ebook.launcher";
+                    final LinearLayout card = new LinearLayout(this);
+                    card.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    clp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    card.setLayoutParams(clp);
+                    card.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    card.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    LinearLayout topRow = new LinearLayout(this);
+                    topRow.setOrientation(LinearLayout.HORIZONTAL);
+                    topRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView tTitle = new TextView(this);
+                    tTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+                    tTitle.setText("KEYS & GESTURES");
+                    setSp(tTitle, 12);
+                    tTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    tTitle.setTextColor(Color.BLACK);
+
+                    final TextView pillBtn = new TextView(this);
+                    pillBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    setSp(pillBtn, 12);
+                    pillBtn.setGravity(Gravity.CENTER);
+                    pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+                    topRow.addView(tTitle);
+                    topRow.addView(pillBtn);
+                    card.addView(topRow);
+
+                    TextView descView = new TextView(this);
+                    setSp(descView, 10);
+                    descView.setTextColor(Color.BLACK);
+                    descView.setText("Unfreeze Bigme launcher to customize hardware side keys or edge gestures");
+                    descView.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    card.addView(descView);
+
+                    LinearLayout toggleRow = new LinearLayout(this);
+                    toggleRow.setOrientation(LinearLayout.HORIZONTAL);
+                    toggleRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                    final Button capToggleBtn = new Button(this);
+                    setSp(capToggleBtn, 10);
+                    capToggleBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    capToggleBtn.setTextColor(Color.BLACK);
+                    capToggleBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
+                    capToggleBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+                    LinearLayout.LayoutParams togLp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    capToggleBtn.setLayoutParams(togLp);
+                    toggleRow.addView(capToggleBtn);
+                    card.addView(toggleRow);
+
+                    LinearLayout shortcutRow = new LinearLayout(this);
+                    shortcutRow.setOrientation(LinearLayout.HORIZONTAL);
+                    shortcutRow.setGravity(Gravity.CENTER_VERTICAL);
+                    shortcutRow.setPadding(0, dpToPx(6), 0, 0);
+
+                    final Button capKeysBtn = new Button(this);
+                    setSp(capKeysBtn, 10);
+                    capKeysBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    capKeysBtn.setText("[ CUSTOM KEYS ]");
+                    capKeysBtn.setTextColor(Color.BLACK);
+                    capKeysBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
+                    capKeysBtn.setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6));
+                    LinearLayout.LayoutParams keysLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+                    keysLp.rightMargin = dpToPx(4);
+                    capKeysBtn.setLayoutParams(keysLp);
+                    shortcutRow.addView(capKeysBtn);
+
+                    final Button capGesturesBtn = new Button(this);
+                    setSp(capGesturesBtn, 10);
+                    capGesturesBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    capGesturesBtn.setText("[ GESTURE SETTINGS ]");
+                    capGesturesBtn.setTextColor(Color.BLACK);
+                    capGesturesBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, dpToPx(2)));
+                    capGesturesBtn.setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6));
+                    LinearLayout.LayoutParams gestLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f);
+                    capGesturesBtn.setLayoutParams(gestLp);
+                    shortcutRow.addView(capGesturesBtn);
+
+                    card.addView(shortcutRow);
+
+                    final Runnable updateCapState = new Runnable() {
+                        @Override
+                        public void run() {
+                            boolean enabled = false;
+                            try {
+                                enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
+                            } catch (Exception e) { /* not installed */ }
+                            if (enabled) {
+                                pillBtn.setText("[ ○ ACTIVE ]");
+                                pillBtn.setTextColor(Color.BLACK);
+                                pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
+                                capToggleBtn.setText("FREEZE LAUNCHER NOW");
+                                capKeysBtn.setEnabled(true);
+                                capKeysBtn.setAlpha(1.0f);
+                                capGesturesBtn.setEnabled(true);
+                                capGesturesBtn.setAlpha(1.0f);
+                            } else {
+                                pillBtn.setText("[ ● FROZEN ]");
+                                pillBtn.setTextColor(Color.WHITE);
+                                pillBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, dpToPx(2)));
+                                capToggleBtn.setText("UNFREEZE TO CONFIGURE");
+                                capKeysBtn.setEnabled(false);
+                                capKeysBtn.setAlpha(0.35f);
+                                capGesturesBtn.setEnabled(false);
+                                capGesturesBtn.setAlpha(0.35f);
+                            }
+                        }
+                    };
+                    updateCapState.run();
+
+                    capToggleBtn.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            boolean enabled = false;
+                            try {
+                                enabled = getPackageManager().getApplicationInfo(capPkg, 0).enabled;
+                            } catch (Exception e) { /* not installed */ }
+                            capToggleBtn.setEnabled(false);
+                            final boolean wasEnabled = enabled;
+                            new Thread(new Runnable() {
                                 @Override
                                 public void run() {
-                                    capToggleBtn.setEnabled(true);
-                                    updateCapState.run();
+                                    if (wasEnabled) {
+                                        ShellUtils.execRootAction("pm disable-user --user 0 " + capPkg);
+                                    } else {
+                                        ShellUtils.execRootAction("pm enable " + capPkg);
+                                    }
+                                    mainHandler.post(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            capToggleBtn.setEnabled(true);
+                                            updateCapState.run();
+                                        }
+                                    });
                                 }
-                            });
+                            }).start();
                         }
-                    }).start();
-                }
-            });
+                    });
 
-            capOpenBtn.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    try {
-                        android.content.Intent intent = new android.content.Intent();
-                        intent.setComponent(new android.content.ComponentName(
-                            "com.xrz.ebook.launcher",
-                            "com.xrz.launcher.settings.CustomMenuActivity"));
-                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
-                        startActivity(intent);
-                    } catch (Exception e) {
-                        Toast.makeText(MainActivity.this,
-                            "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                }
-            });
-
-            addSectionContent(card);
-        }
-
-        // ── Section: DEBLOAT ───────────────────────────────────────────────
-        addSectionHeader("DEBLOAT");
-
-        addDebloatToggle("GOOGLE_STACK", "GOOGLE_STACK", "GOOGLE_PKGS_SEL",
-            "Freeze Play Services & GSF (cloud socket wakeups)",
-            ConfigManager.GOOGLE_PKGS,
-            "pm list packages -d 2>/dev/null | grep -q com.google.android.gms && echo FROZEN || echo ACTIVE",
-            logDrawer);
-
-        addDebloatToggle("BIGME_BLOAT", "BIGME_BLOAT", "BIGME_PKGS_SEL",
-            "Freeze 15 Bigme AI, cloud, store, demo daemons",
-            ConfigManager.BIGME_PKGS,
-            "pm list packages -d 2>/dev/null | grep -q com.xrz.ai && echo FROZEN || echo ACTIVE",
-            logDrawer);
-
-        addDebloatToggle("MTK_CELLULAR", "MTK_CELLULAR", "MTK_PKGS_SEL",
-            "Disable baseband IMS, telephony, sim services",
-            ConfigManager.MTK_PKGS,
-            "pm list packages -d 2>/dev/null | grep -q com.mediatek.ims && echo FROZEN || echo ACTIVE",
-            logDrawer);
-
-        addDebloatToggle("AOSP_STUBS", "AOSP_STUBS", "AOSP_PKGS_SEL",
-            "Freeze dialer, telecom, print spooler, MMS provider",
-            ConfigManager.AOSP_PKGS,
-            "pm list packages -d 2>/dev/null | grep -q com.android.phone && echo FROZEN || echo ACTIVE",
-            logDrawer);
-
-        // ── Section: NETWORK & TELEMETRY ───────────────────────────────────
-        addSectionHeader("NETWORK");
-
-        addToggle("LOCKDOWN_GBOARD", "LOCKDOWN_GBOARD",
-            "Block background jobs, Superpacks sync & wakelocks for Gboard",
-            false,
-            "cmd appops set com.google.android.inputmethod.latin RUN_IN_BACKGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin START_FOREGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin WAKE_LOCK ignore 2>/dev/null; cmd jobscheduler cancel com.google.android.inputmethod.latin 2>/dev/null; am set-standby-bucket com.google.android.inputmethod.latin rare 2>/dev/null; dumpsys deviceidle whitelist -com.google.android.inputmethod.latin 2>/dev/null",
-            "cmd appops set com.google.android.inputmethod.latin RUN_IN_BACKGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin START_FOREGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin WAKE_LOCK allow 2>/dev/null; am set-standby-bucket com.google.android.inputmethod.latin active 2>/dev/null",
-            "cmd appops get com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND 2>/dev/null | head -1",
-            logDrawer);
-
-        // ALARM_WAKEUP does not exist on API 34, so this toggle used to do
-        // nothing at all. Now it uses ops that exist (verified on device).
-        addToggle("SUPPRESS_ALARMS", "SUPPRESS_ALARMS",
-            "Deny GMS exact alarms, background execution & wake locks",
-            false,
-            ConfigManager.getSuppressGmsAlarmsCmd(true),
-            ConfigManager.getSuppressGmsAlarmsCmd(false),
-            ConfigManager.getSuppressGmsAlarmsProbeCmd(),
-            logDrawer);
-
-        addToggle("WIFI_SLEEP", "WIFI_SLEEP_ZERO",
-            "Disable Wi-Fi scans & interfaces in standby (~5 mA)",
-            false,
-            "settings put global wifi_sleep_policy 0 2>/dev/null; settings put global wifi_idle_ms 5000 2>/dev/null; settings put global wifi_scan_always_enabled 0 2>/dev/null; cmd wifi set-scan-always-available 0 2>/dev/null",
-            "settings put global wifi_sleep_policy 2 2>/dev/null; settings put global wifi_scan_always_enabled 1 2>/dev/null",
-            "settings get global wifi_sleep_policy",
-            logDrawer);
-
-        // ── Section: POWER ─────────────────────────────────────────────────
-        addSectionHeader("POWER");
-
-        // Own config key: this used to write "1"/"0" into GOVERNOR_PROFILE, which
-        // clobbered the wake/sleep profile name chosen below.
-        addToggle("CPU_OPTIMIZER", "CPU_OPTIMIZER",
-            "Let the little cluster reach full 2.2GHz dynamically (clears the PPM hard limit)",
-            false,
-            ConfigManager.getCpuUncapCmd(),
-            ConfigManager.buildGovernorCmd("stock"),
-            ConfigManager.getCpuUncapProbeCmd(),
-            logDrawer);
-
-        // ── WAKE GOVERNOR selector (screen-on profile)
-        LinearLayout wakeRow = new LinearLayout(this);
-        wakeRow.setOrientation(LinearLayout.HORIZONTAL);
-        wakeRow.setGravity(Gravity.CENTER_VERTICAL);
-        wakeRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-        wakeRow.setBackgroundColor(Color.WHITE);
-
-        TextView wakeLabel = new TextView(this);
-        wakeLabel.setText("WAKE GOV: ");
-        wakeLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(wakeLabel, 11);
-        wakeLabel.setTextColor(Color.BLACK);
-
-        final TextView wakeVal = new TextView(this);
-        wakeVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("GOVERNOR_PROFILE", "schedutil_efficient")));
-        wakeVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(wakeVal, 11);
-        wakeVal.setTextColor(Color.BLACK);
-
-        Button changeWake = new Button(this);
-        changeWake.setText("[CHANGE]");
-        changeWake.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(changeWake, 11);
-        changeWake.setBackgroundColor(Color.BLACK);
-        changeWake.setTextColor(Color.WHITE);
-        changeWake.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                final String[] opts = {
-                    "Balanced Efficient (900-2200MHz, 8 Cores)",
-                    "E-Reader Battery (900-1351MHz, 4 Cores)",
-                    "Deep Sleep (900/400MHz Locked, 4 Cores)",
-                    "Stock MediaTek (factory 2.06GHz lock)"
-                };
-                final String[] vals = {"schedutil_efficient", "ereader_battery", "deep_sleep", "stock"};
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("WAKE GOVERNOR (Screen On)")
-                    .setItems(opts, new DialogInterface.OnClickListener() {
+                    capKeysBtn.setOnClickListener(new View.OnClickListener() {
                         @Override
-                        public void onClick(DialogInterface d, int which) {
-                            String selected = vals[which];
-                            currentConfig.setProperty("GOVERNOR_PROFILE", selected);
-                            // Only the E-Reader profile wants 4 cores offline; any
-                            // other profile must clear the latch or buildGovernorCmd()
-                            // keeps cores 4-7 offline forever (even for stock/8-core).
-                            currentConfig.setProperty("HOTPLUG_4_CORES",
-                                "ereader_battery".equals(selected) ? "1" : "0");
-                            ConfigManager.saveConfig(currentConfig);
-                            wakeVal.setText(ConfigManager.getGovernorLabel(selected));
-                            ShellUtils.execRootAction(ConfigManager.buildGovernorCmd(selected, currentConfig.getProperty("HOTPLUG_4_CORES", "0")));
-                            ShellUtils.appendLog("Wake Governor set to: " + selected);
-                            if (logDrawer.getVisibility() == View.VISIBLE) {
-                                logDrawer.setText(ShellUtils.readLog(15));
+                        public void onClick(View v) {
+                            try {
+                                android.content.Intent intent = new android.content.Intent("com.xrz.xlauncher.action.custom_menu");
+                                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                                startActivity(intent);
+                            } catch (Exception e) {
+                                Toast.makeText(MainActivity.this, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                             }
                         }
-                    }).show();
-            }
-        });
+                    });
 
-        wakeRow.addView(wakeLabel);
-        wakeRow.addView(wakeVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-        wakeRow.addView(changeWake);
-        addSectionContent(wakeRow);
-
-        TextView wakeDesc = new TextView(this);
-        wakeDesc.setText("CPU profile applied when screen is ON. Controls performance during active use.");
-        setSp(wakeDesc, 10);
-        wakeDesc.setTypeface(Typeface.DEFAULT);
-        wakeDesc.setTextColor(Color.BLACK);
-        wakeDesc.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
-        addSectionContent(wakeDesc);
-
-        // ── SLEEP GOVERNOR selector (screen-off profile)
-        LinearLayout sleepRow = new LinearLayout(this);
-        sleepRow.setOrientation(LinearLayout.HORIZONTAL);
-        sleepRow.setGravity(Gravity.CENTER_VERTICAL);
-        sleepRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-        sleepRow.setBackgroundColor(Color.WHITE);
-
-        TextView sleepLabel = new TextView(this);
-        sleepLabel.setText("SLEEP GOV: ");
-        sleepLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(sleepLabel, 11);
-        sleepLabel.setTextColor(Color.BLACK);
-
-        final TextView sleepVal = new TextView(this);
-        sleepVal.setText(ConfigManager.getGovernorLabel(currentConfig.getProperty("SLEEP_GOVERNOR", "ereader_battery")));
-        sleepVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(sleepVal, 11);
-        sleepVal.setTextColor(Color.BLACK);
-
-        Button changeSleep = new Button(this);
-        changeSleep.setText("[CHANGE]");
-        changeSleep.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(changeSleep, 11);
-        changeSleep.setBackgroundColor(Color.BLACK);
-        changeSleep.setTextColor(Color.WHITE);
-        changeSleep.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                final String[] opts = {
-                    "Deep Sleep (900/400MHz Locked, 4 Cores)",
-                    "E-Reader Battery (900-1351MHz, 4 Cores)",
-                    "Balanced Efficient (900-2200MHz, 8 Cores)",
-                    "Stock MediaTek (factory 2.06GHz lock)"
-                };
-                final String[] vals = {"deep_sleep", "ereader_battery", "schedutil_efficient", "stock"};
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("SLEEP GOVERNOR (Screen Off)")
-                    .setItems(opts, new DialogInterface.OnClickListener() {
+                    capGesturesBtn.setOnClickListener(new View.OnClickListener() {
                         @Override
-                        public void onClick(DialogInterface d, int which) {
-                            String selected = vals[which];
-                            currentConfig.setProperty("SLEEP_GOVERNOR", selected);
-                            ConfigManager.saveConfig(currentConfig);
-                            sleepVal.setText(ConfigManager.getGovernorLabel(selected));
-                            ShellUtils.appendLog("Sleep Governor set to: " + selected);
-                            if (logDrawer.getVisibility() == View.VISIBLE) {
-                                logDrawer.setText(ShellUtils.readLog(15));
+                        public void onClick(View v) {
+                            try {
+                                android.content.Intent intent = new android.content.Intent("com.xrz.xlauncher.action.settings_func");
+                                intent.putExtra("model", 11);
+                                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                                startActivity(intent);
+                            } catch (Exception e) {
+                                Toast.makeText(MainActivity.this, "Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
                             }
                         }
-                    }).show();
-            }
-        });
+                    });
 
-        sleepRow.addView(sleepLabel);
-        sleepRow.addView(sleepVal, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-        sleepRow.addView(changeSleep);
-        addSectionContent(sleepRow);
-
-        TextView sleepDesc = new TextView(this);
-        sleepDesc.setText("CPU profile applied when screen turns OFF. Lower = more battery savings while idle.");
-        setSp(sleepDesc, 10);
-        sleepDesc.setTypeface(Typeface.DEFAULT);
-        sleepDesc.setTextColor(Color.BLACK);
-        sleepDesc.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
-        addSectionContent(sleepDesc);
-
-        // ── SLEEP GOVERNOR AUTO-TOGGLE (enable/disable auto-switching)
-        addToggle("SLEEP GOV AUTO", "SLEEP_GOVERNOR_ENABLED",
-            "Auto-switch between Wake/Sleep profiles on screen on/off. Disable to use manual governor only.",
-            false,
-            "",
-            "",
-            "dumpsys activity services com.right9code.hibigzero 2>/dev/null | grep -q 'HiBigApp' && echo ACTIVE || echo CHECKING",
-            logDrawer);
-
-        addToggle("AGGRESSIVE_DOZE", "AGGRESSIVE_DOZE",
-            "Enter doze quickly: light idle after 5 min, deep idle after 30 min",
-            false,
-            ConfigManager.getAggressiveDozeCmd(true),
-            ConfigManager.getAggressiveDozeCmd(false),
-            "dumpsys deviceidle 2>/dev/null | grep -oE 'mDeepEnabled=[a-z]+' | head -1",
-            logDrawer);
-
-        if (ConfigManager.isChargeLimitAvailable()) {
-            addToggle("CHARGE_LIMIT", "BATTERY_CAP_85",
-                "Stop charging at the target and run off the charger instead of "
-                    + "sitting at 100% all night. Only polls while plugged in, and "
-                    + "charging is restored the moment the cable comes out.",
-                false,
-                "", "",
-                ConfigManager.getChargeLimitProbeCmd(),
-                logDrawer,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        ChargeLimitController.applyConfig(MainActivity.this);
-                        if (chargeLimitStateRefresh != null) chargeLimitStateRefresh.run();
-                    }
-                });
-
-            // Target selector. The resume point is derived 5% below the target;
-            // that gap is what stops the switch chattering at the threshold.
-            LinearLayout limitRow = new LinearLayout(this);
-            limitRow.setOrientation(LinearLayout.HORIZONTAL);
-            limitRow.setGravity(Gravity.CENTER_VERTICAL);
-            limitRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-            limitRow.setBackgroundColor(Color.WHITE);
-
-            TextView lLabel = new TextView(this);
-            lLabel.setText("HOLD AT: ");
-            lLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(lLabel, 11);
-            lLabel.setTextColor(Color.BLACK);
-
-            final TextView lVal = new TextView(this);
-            lVal.setText(ConfigManager.getChargeLimitPct() + "%"
-                + "  (resume " + ConfigManager.getChargeResumePct() + "%)");
-            lVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(lVal, 11);
-            lVal.setTextColor(Color.BLACK);
-            lVal.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-
-            Button changeLimit = new Button(this);
-            changeLimit.setText("[CHANGE]");
-            changeLimit.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(changeLimit, 11);
-            changeLimit.setBackgroundColor(Color.BLACK);
-            changeLimit.setTextColor(Color.WHITE);
-            changeLimit.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    final String[] opts = {"70%", "75%", "80% (recommended)", "85%", "90%"};
-                    final int[] vals = {70, 75, 80, 85, 90};
-                    new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("CHARGE CEILING")
-                        .setItems(opts, new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int which) {
-                                currentConfig.setProperty("CHARGE_LIMIT_PCT",
-                                    String.valueOf(vals[which]));
-                                ConfigManager.saveConfig(currentConfig);
-                                lVal.setText(vals[which] + "%  (resume "
-                                    + Math.max(50, vals[which] - 5) + "%)");
-                                ChargeLimitController.applyConfig(MainActivity.this);
-                                if (chargeLimitStateRefresh != null) chargeLimitStateRefresh.run();
-                            }
-                        }).show();
+                    addSectionContent(card);
                 }
-            });
 
-            limitRow.addView(lLabel);
-            limitRow.addView(lVal);
-            limitRow.addView(changeLimit);
-            addSectionContent(limitRow);
+                addToggle("FIX_UART", "FIX_UART",
+                    "Kill runaway uart2serport daemon & clear early-boot crash latch",
+                    false,
+                    "setprop sys.init.updatable_crashing \"\" 2>/dev/null; setprop sys.init.updatable_crashing_process_name \"\" 2>/dev/null; setprop ctl.stop uart2serport 2>/dev/null; setprop persist.vendor.uart2serport.enable 0 2>/dev/null; kill -9 $(pidof uart2serport) 2>/dev/null; chmod 755 /system/bin/start_uart2serport.sh 2>/dev/null",
+                    "setprop persist.vendor.uart2serport.enable 1 2>/dev/null",
+                    "[ -f /system/bin/start_uart2serport.sh ] && [ -z \"$(getprop sys.init.updatable_crashing)\" ] && echo 'STUBBED_OK' || echo 'CRASH_LOOP'",
+                    logDrawer);
+                break;
 
-            // Live state line. Reads the switch node, so it reports what the device
-            // is doing rather than what the app intended. Updated on render, after a
-            // toggle and after a target change - never on a timer, because repainting
-            // text on e-ink costs a screen refresh.
-            final TextView lState = new TextView(this);
-            lState.setText(ChargeLimitController.describe(this));
-            setSp(lState, 10);
-            lState.setTypeface(Typeface.DEFAULT);
-            lState.setTextColor(Color.BLACK);
-            lState.setPadding(dpToPx(16), 0, dpToPx(16), dpToPx(8));
-            lState.setBackgroundColor(Color.WHITE);
-            addSectionContent(lState);
+            case 1: // ── SENSORS ──
+                addSectionHeader("SENSORS", "Mute background sensor listeners to drop silicon into 0.001mA sleep");
+                addSensorsControlCard(logDrawer);
+                break;
 
-            final Runnable refreshState = new Runnable() {
-                @Override
-                public void run() {
-                    lState.setText(ChargeLimitController.describe(MainActivity.this));
-                }
-            };
-            chargeLimitStateRefresh = new Runnable() {
-                @Override
-                public void run() {
-                    // The controller does its work on a background thread, so give it
-                    // a moment before asking the device what it settled on.
-                    mainHandler.postDelayed(refreshState, 3000);
-                }
-            };
-        } else {
-            addUnavailableToggle("CHARGE_LIMIT",
-                "This device exposes no charge-control switch, and unlike the old "
-                    + "implementation the app no longer pretends to cap charging: it "
-                    + "checked for a charge threshold node and for the MediaTek "
-                    + "current_cmd switch, and found neither.");
-        }
+            case 2: // ── STANDBY & SUSPEND ──
+                addSectionHeader("STANDBY & SUSPEND", "Eliminate background wakeups and drain while screen is off");
 
+                // Sleep Governor card with 3 inline chips
+                {
+                    final LinearLayout sleepCard = new LinearLayout(this);
+                    sleepCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams sclp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    sclp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    sleepCard.setLayoutParams(sclp);
+                    sleepCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    sleepCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
 
-        addToggle("AUTO_SHUTDOWN", "AUTO_SHUTDOWN_ENABLED",
-            "Clean reboot -p after inactivity (E-ink retains at 0 mA). Enabling this "
-                + "also disables Bigme's own power-off timer so the two cannot compete.",
-            false,
-            "", "", "",
-            logDrawer,
-            new Runnable() {
-                @Override
-                public void run() {
-                    if ("1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "1"))) {
-                        // Our timer is the single authority for power-off: Bigme's own
-                        // PowersaveShutDownAlarmReceiver must not race it (it is also a
-                        // wakeup source). Written to config so boot re-asserts it.
-                        if (!"1".equals(currentConfig.getProperty("KILL_SHUTDOWN_ALARM", "0"))) {
-                            currentConfig.setProperty("KILL_SHUTDOWN_ALARM", "1");
-                            ConfigManager.saveConfig(currentConfig);
-                            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(true));
-                            ShellUtils.appendLog("Auto-shutdown ON -> Bigme's own timer disabled");
-                        }
-                        ShutdownAlarmReceiver.scheduleAlarmWithConfig(MainActivity.this);
-                        mainHandler.post(new Runnable() {
-                            @Override
-                            public void run() { renderCurrentTab(); }
-                        });
-                    } else {
-                        ShutdownAlarmReceiver.cancelAlarm(MainActivity.this);
-                        ShellUtils.appendLog("Auto-shutdown OFF -> Bigme's timer left disabled "
-                            + "(turn KILL_SHUTDOWN off to restore it)");
-                    }
-                }
-            });
+                    TextView sTitle = new TextView(this);
+                    sTitle.setText("SLEEP CPU GOVERNOR (STANDBY)");
+                    setSp(sTitle, 12);
+                    sTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    sTitle.setTextColor(Color.BLACK);
+                    sleepCard.addView(sTitle);
 
-        // Timeout selector
-        LinearLayout timeoutRow = new LinearLayout(this);
-        timeoutRow.setOrientation(LinearLayout.HORIZONTAL);
-        timeoutRow.setGravity(Gravity.CENTER_VERTICAL);
-        timeoutRow.setPadding(dpToPx(16), dpToPx(8), dpToPx(16), dpToPx(8));
-        timeoutRow.setBackgroundColor(Color.WHITE);
+                    final TextView sDesc = new TextView(this);
+                    setSp(sDesc, 10);
+                    sDesc.setTextColor(Color.BLACK);
+                    sDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    sleepCard.addView(sDesc);
 
-        TextView tLabel = new TextView(this);
-        tLabel.setText("TIMEOUT: ");
-        tLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(tLabel, 11);
-        tLabel.setTextColor(Color.BLACK);
+                    final String[] sleepLabels = {"DEEP SLEEP", "LIGHT SYNC", "STOCK"};
+                    final String[] sleepVals = {"deep_sleep", "ereader_battery", "stock"};
+                    final String curSleep = currentConfig.getProperty("SLEEP_GOVERNOR", "deep_sleep");
 
-        final TextView tVal = new TextView(this);
-        tVal.setText(currentConfig.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120") + " MIN");
-        tVal.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(tVal, 11);
-        tVal.setTextColor(Color.BLACK);
-
-        Button changeTimer = new Button(this);
-        changeTimer.setText("[CHANGE]");
-        changeTimer.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(changeTimer, 11);
-        changeTimer.setBackgroundColor(Color.BLACK);
-        changeTimer.setTextColor(Color.WHITE);
-        changeTimer.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                final String[] opts = {
-                    "60 min (1h)",
-                    "120 min (2h)",
-                    "240 min (4h - Break-Even)",
-                    "480 min (8h - Overnight)",
-                    "Custom (enter minutes)..."
-                };
-                final String[] vals = {"60","120","240","480"};
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("INACTIVITY TIMEOUT")
-                    .setItems(opts, new DialogInterface.OnClickListener() {
+                    final Runnable updateSleepDesc = new Runnable() {
                         @Override
-                        public void onClick(DialogInterface d, int which) {
-                            if (which < vals.length) {
-                                applyTimeoutValue(vals[which], tVal, logDrawer);
+                        public void run() {
+                            String p = currentConfig.getProperty("SLEEP_GOVERNOR", "deep_sleep");
+                            if ("ereader_battery".equals(p)) {
+                                sDesc.setText("4 Cores (900-1351MHz). Allows background downloads/sync to finish.");
+                            } else if ("stock".equals(p)) {
+                                sDesc.setText("Factory MediaTek policy in standby.");
                             } else {
+                                sDesc.setText("Hard locked to 900/400MHz floor. Max standby battery savings.");
+                            }
+                        }
+                    };
+                    updateSleepDesc.run();
+
+                    sleepCard.addView(createStepperChips(sleepLabels, sleepVals, curSleep, new ChipSelectListener() {
+                        @Override
+                        public void onChipSelected(String selected) {
+                            currentConfig.setProperty("SLEEP_GOVERNOR", selected);
+                            currentConfig.setProperty("SLEEP_GOVERNOR_ENABLED", "1");
+                            ConfigManager.saveConfig(currentConfig);
+                            updateSleepDesc.run();
+                            HiBigApp.registerScreenReceiver();
+                            ShellUtils.appendLog("Sleep Governor set to: " + selected);
+                            updateTelemetryStrip();
+                        }
+                    }));
+                    addSectionContent(sleepCard);
+                }
+
+                // Doze Standby Speed with 3 inline chips
+                {
+                    final LinearLayout dozeCard = new LinearLayout(this);
+                    dozeCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams dclp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    dclp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    dozeCard.setLayoutParams(dclp);
+                    dozeCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    dozeCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    TextView dTitle = new TextView(this);
+                    dTitle.setText("DOZE STANDBY SPEED");
+                    setSp(dTitle, 12);
+                    dTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    dTitle.setTextColor(Color.BLACK);
+                    dozeCard.addView(dTitle);
+
+                    final TextView dDesc = new TextView(this);
+                    setSp(dDesc, 10);
+                    dDesc.setTextColor(Color.BLACK);
+                    dDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    dozeCard.addView(dDesc);
+
+                    final String[] dozeLabels = {"INSTANT (15s)", "AGGRESSIVE (5m)", "STOCK"};
+                    final String[] dozeVals = {"instant", "aggressive", "stock"};
+                    String initialDoze = "1".equals(currentConfig.getProperty("INSTANT_DEEP_DOZE", "0")) ? "instant"
+                        : ("1".equals(currentConfig.getProperty("AGGRESSIVE_DOZE", "0")) ? "aggressive" : "stock");
+
+                    final Runnable updateDozeDesc = new Runnable() {
+                        @Override
+                        public void run() {
+                            if ("1".equals(currentConfig.getProperty("INSTANT_DEEP_DOZE", "0"))) {
+                                dDesc.setText("Drops to deep sleep in 15 seconds. Standby current falls to ~2-5 mA immediately. (Alarms still ring)");
+                            } else if ("1".equals(currentConfig.getProperty("AGGRESSIVE_DOZE", "0"))) {
+                                dDesc.setText("Shortens inactive delays: deep doze in 5 minutes instead of 30 minutes.");
+                            } else {
+                                dDesc.setText("Stock Android 14 timing: waits 30 minutes of motionless inactivity before deep sleep.");
+                            }
+                        }
+                    };
+                    updateDozeDesc.run();
+
+                    dozeCard.addView(createStepperChips(dozeLabels, dozeVals, initialDoze, new ChipSelectListener() {
+                        @Override
+                        public void onChipSelected(String selected) {
+                            if ("instant".equals(selected)) {
+                                currentConfig.setProperty("INSTANT_DEEP_DOZE", "1");
+                                currentConfig.setProperty("AGGRESSIVE_DOZE", "1");
+                                ShellUtils.execRootAction(ConfigManager.getAggressiveDozeCmd(true));
+                            } else if ("aggressive".equals(selected)) {
+                                currentConfig.setProperty("INSTANT_DEEP_DOZE", "0");
+                                currentConfig.setProperty("AGGRESSIVE_DOZE", "1");
+                                ShellUtils.execRootAction(ConfigManager.getInstantDeepDozeCmd(false));
+                                ShellUtils.execRootAction(ConfigManager.getAggressiveDozeCmd(true));
+                            } else {
+                                currentConfig.setProperty("INSTANT_DEEP_DOZE", "0");
+                                currentConfig.setProperty("AGGRESSIVE_DOZE", "0");
+                                ShellUtils.execRootAction(ConfigManager.getInstantDeepDozeCmd(false));
+                                ShellUtils.execRootAction(ConfigManager.getAggressiveDozeCmd(false));
+                            }
+                            ConfigManager.saveConfig(currentConfig);
+                            updateDozeDesc.run();
+                            updateTelemetryStrip();
+                        }
+                    }));
+                    addSectionContent(dozeCard);
+                }
+
+                addToggle("WIFI_SLEEP", "WIFI_SLEEP_ZERO",
+                    "Disable Wi-Fi scans & interfaces in standby (~5 mA)",
+                    false,
+                    "settings put global wifi_sleep_policy 0 2>/dev/null; settings put global wifi_idle_ms 5000 2>/dev/null; settings put global wifi_scan_always_enabled 0 2>/dev/null; cmd wifi set-scan-always-available 0 2>/dev/null",
+                    "settings put global wifi_sleep_policy 2 2>/dev/null; settings put global wifi_scan_always_enabled 1 2>/dev/null",
+                    "settings get global wifi_sleep_policy",
+                    logDrawer);
+
+                // Suspend & Alarm Shield
+                {
+                    final LinearLayout shieldCard = new LinearLayout(this);
+                    shieldCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams shlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    shlp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    shieldCard.setLayoutParams(shlp);
+                    shieldCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    shieldCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    LinearLayout shTop = new LinearLayout(this);
+                    shTop.setOrientation(LinearLayout.HORIZONTAL);
+                    shTop.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView shTitle = new TextView(this);
+                    shTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+                    shTitle.setText("SUSPEND & ALARM SHIELD");
+                    setSp(shTitle, 12);
+                    shTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    shTitle.setTextColor(Color.BLACK);
+
+                    final TextView shPill = new TextView(this);
+                    shPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    setSp(shPill, 12);
+                    shPill.setGravity(Gravity.CENTER);
+                    shPill.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+                    shTop.addView(shTitle);
+                    shTop.addView(shPill);
+                    shieldCard.addView(shTop);
+
+                    TextView shDesc = new TextView(this);
+                    shDesc.setText("Protects kernel suspend and batches alarms to prevent sleep interruptions");
+                    setSp(shDesc, 10);
+                    shDesc.setTextColor(Color.BLACK);
+                    shDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    shieldCard.addView(shDesc);
+
+                    final TextView p1 = addShieldRow(shieldCard, "Kill Bigme shutdown timer (Intent Firewall)", "KILL_SHUTDOWN_ALARM", ConfigManager.getKillShutdownAlarmCmd(true), ConfigManager.getKillShutdownAlarmCmd(false));
+                    final TextView p2 = addShieldRow(shieldCard, "Batch background alarms (10-45m fuzz, skip time_tick)", "WIDE_ALARM_FUZZ", ConfigManager.getWideAlarmFuzzCmd(true), ConfigManager.getWideAlarmFuzzCmd(false));
+                    final TextView p3 = addShieldRow(shieldCard, "Throttle JobScheduler idle alarms (threshold 99)", "SUPPRESS_JS_IDLE", ConfigManager.getSuppressJsIdleCmd(true), ConfigManager.getSuppressJsIdleCmd(false));
+                    final TextView p4 = addShieldRow(shieldCard, "Instant keyguard lock on power-off (zero timer race)", "INSTANT_LOCK", ConfigManager.getInstantLockCmd(true), ConfigManager.getInstantLockCmd(false));
+
+                    final Runnable updateShieldPill = new Runnable() {
+                        @Override
+                        public void run() {
+                            boolean allOn = "1".equals(currentConfig.getProperty("KILL_SHUTDOWN_ALARM", "0")) &&
+                                            "1".equals(currentConfig.getProperty("WIDE_ALARM_FUZZ", "0")) &&
+                                            "1".equals(currentConfig.getProperty("SUPPRESS_JS_IDLE", "0")) &&
+                                            "1".equals(currentConfig.getProperty("INSTANT_LOCK", "0"));
+                            updatePillView(shPill, allOn);
+                        }
+                    };
+                    updateShieldPill.run();
+
+                    shPill.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            boolean anyOn = "1".equals(currentConfig.getProperty("KILL_SHUTDOWN_ALARM", "0")) ||
+                                            "1".equals(currentConfig.getProperty("WIDE_ALARM_FUZZ", "0")) ||
+                                            "1".equals(currentConfig.getProperty("SUPPRESS_JS_IDLE", "0")) ||
+                                            "1".equals(currentConfig.getProperty("INSTANT_LOCK", "0"));
+                            boolean target = !anyOn;
+                            String val = target ? "1" : "0";
+                            currentConfig.setProperty("KILL_SHUTDOWN_ALARM", val);
+                            currentConfig.setProperty("WIDE_ALARM_FUZZ", val);
+                            currentConfig.setProperty("SUPPRESS_JS_IDLE", val);
+                            currentConfig.setProperty("INSTANT_LOCK", val);
+                            ConfigManager.saveConfig(currentConfig);
+                            updatePillView(p1, target);
+                            updatePillView(p2, target);
+                            updatePillView(p3, target);
+                            updatePillView(p4, target);
+                            updateShieldPill.run();
+                            ShellUtils.execRootAction(ConfigManager.getKillShutdownAlarmCmd(target) + "; " +
+                                                      ConfigManager.getWideAlarmFuzzCmd(target) + "; " +
+                                                      ConfigManager.getSuppressJsIdleCmd(target) + "; " +
+                                                      ConfigManager.getInstantLockCmd(target));
+                        }
+                    });
+                    addSectionContent(shieldCard);
+                }
+
+                // Charge Ceiling with 5 inline chips
+                if (ConfigManager.isChargeLimitAvailable()) {
+                    final LinearLayout limitCard = new LinearLayout(this);
+                    limitCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams lclp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lclp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    limitCard.setLayoutParams(lclp);
+                    limitCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    limitCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    LinearLayout lTop = new LinearLayout(this);
+                    lTop.setOrientation(LinearLayout.HORIZONTAL);
+                    lTop.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView lTitle = new TextView(this);
+                    lTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+                    lTitle.setText("CHARGE CEILING");
+                    setSp(lTitle, 12);
+                    lTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    lTitle.setTextColor(Color.BLACK);
+
+                    final TextView lPill = new TextView(this);
+                    lPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    setSp(lPill, 12);
+                    lPill.setGravity(Gravity.CENTER);
+                    lPill.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+                    lTop.addView(lTitle);
+                    lTop.addView(lPill);
+                    limitCard.addView(lTop);
+
+                    TextView lDesc = new TextView(this);
+                    lDesc.setText("Holds battery at target; phone runs off charger instead of sitting at 100% all night");
+                    setSp(lDesc, 10);
+                    lDesc.setTextColor(Color.BLACK);
+                    lDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    limitCard.addView(lDesc);
+
+                    final String[] limitLabels = {"75%", "80%", "85%", "90%", "CUSTOM"};
+                    final String[] limitVals = {"75", "80", "85", "90", "custom"};
+                    String curLimit = String.valueOf(ConfigManager.getChargeLimitPct());
+
+                    final TextView lState = new TextView(this);
+                    setSp(lState, 10);
+                    lState.setTypeface(Typeface.DEFAULT);
+                    lState.setTextColor(Color.BLACK);
+                    lState.setPadding(0, dpToPx(4), 0, dpToPx(2));
+                    lState.setText(ChargeLimitController.describe(this));
+
+                    final Runnable updateLimitPill = new Runnable() {
+                        @Override
+                        public void run() {
+                            boolean on = "1".equals(currentConfig.getProperty("BATTERY_CAP_85", "0"));
+                            updatePillView(lPill, on);
+                            lState.setText(ChargeLimitController.describe(MainActivity.this));
+                        }
+                    };
+                    updateLimitPill.run();
+
+                    lPill.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            boolean on = "1".equals(currentConfig.getProperty("BATTERY_CAP_85", "0"));
+                            currentConfig.setProperty("BATTERY_CAP_85", on ? "0" : "1");
+                            ConfigManager.saveConfig(currentConfig);
+                            ChargeLimitController.applyConfig(MainActivity.this);
+                            updateLimitPill.run();
+                        }
+                    });
+
+                    limitCard.addView(createStepperChips(limitLabels, limitVals, curLimit, new ChipSelectListener() {
+                        @Override
+                        public void onChipSelected(String selected) {
+                            if ("custom".equals(selected)) {
+                                final EditText input = new EditText(MainActivity.this);
+                                input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+                                input.setHint("Percentage (e.g. 78)");
+                                input.setText(String.valueOf(ConfigManager.getChargeLimitPct()));
+                                new AlertDialog.Builder(MainActivity.this)
+                                    .setTitle("CUSTOM CHARGE LIMIT")
+                                    .setView(input)
+                                    .setPositiveButton("SET", new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface di, int btn) {
+                                            String val = input.getText().toString().trim();
+                                            if (!val.isEmpty()) {
+                                                try {
+                                                    int pct = Integer.parseInt(val);
+                                                    if (pct >= 50 && pct <= 95) {
+                                                        currentConfig.setProperty("CHARGE_LIMIT_PCT", String.valueOf(pct));
+                                                        ConfigManager.saveConfig(currentConfig);
+                                                        ChargeLimitController.applyConfig(MainActivity.this);
+                                                        updateLimitPill.run();
+                                                    }
+                                                } catch (Exception ignored) {}
+                                            }
+                                        }
+                                    })
+                                    .setNegativeButton("CANCEL", null).show();
+                            } else {
+                                currentConfig.setProperty("CHARGE_LIMIT_PCT", selected);
+                                ConfigManager.saveConfig(currentConfig);
+                                ChargeLimitController.applyConfig(MainActivity.this);
+                                updateLimitPill.run();
+                            }
+                        }
+                    }));
+
+                    limitCard.addView(lState);
+                    addSectionContent(limitCard);
+                }
+
+                // Inactivity Auto-Shutdown card
+                {
+                    final LinearLayout shutCard = new LinearLayout(this);
+                    shutCard.setOrientation(LinearLayout.VERTICAL);
+                    LinearLayout.LayoutParams sclp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    sclp.setMargins(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
+                    shutCard.setLayoutParams(sclp);
+                    shutCard.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
+                    shutCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+
+                    LinearLayout sTop = new LinearLayout(this);
+                    sTop.setOrientation(LinearLayout.HORIZONTAL);
+                    sTop.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView sTitle = new TextView(this);
+                    sTitle.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+                    sTitle.setText("INACTIVITY AUTO-SHUTDOWN");
+                    setSp(sTitle, 12);
+                    sTitle.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    sTitle.setTextColor(Color.BLACK);
+
+                    final TextView sPill = new TextView(this);
+                    sPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                    setSp(sPill, 12);
+                    sPill.setGravity(Gravity.CENTER);
+                    sPill.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
+
+                    sTop.addView(sTitle);
+                    sTop.addView(sPill);
+                    shutCard.addView(sTop);
+
+                    TextView sDesc = new TextView(this);
+                    sDesc.setText("Clean reboot -p after inactivity (retains current E-ink page at 0 mA permanently)");
+                    setSp(sDesc, 10);
+                    sDesc.setTextColor(Color.BLACK);
+                    sDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
+                    shutCard.addView(sDesc);
+
+                    final String[] timeLabels = {"1H", "2H", "4H", "8H", "CUSTOM"};
+                    final String[] timeVals = {"60", "120", "240", "480", "custom"};
+                    String curTime = currentConfig.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120");
+
+                    final Runnable updateShutPill = new Runnable() {
+                        @Override
+                        public void run() {
+                            boolean on = "1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "0"));
+                            updatePillView(sPill, on);
+                        }
+                    };
+                    updateShutPill.run();
+
+                    sPill.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            boolean on = "1".equals(currentConfig.getProperty("AUTO_SHUTDOWN_ENABLED", "0"));
+                            currentConfig.setProperty("AUTO_SHUTDOWN_ENABLED", on ? "0" : "1");
+                            ConfigManager.saveConfig(currentConfig);
+                            if (!on) {
+                                ShutdownAlarmReceiver.scheduleAlarmWithConfig(MainActivity.this);
+                            } else {
+                                ShutdownAlarmReceiver.cancelAlarm(MainActivity.this);
+                            }
+                            updateShutPill.run();
+                        }
+                    });
+
+                    shutCard.addView(createStepperChips(timeLabels, timeVals, curTime, new ChipSelectListener() {
+                        @Override
+                        public void onChipSelected(String selected) {
+                            if ("custom".equals(selected)) {
                                 final EditText input = new EditText(MainActivity.this);
                                 input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
                                 input.setHint("Minutes (e.g. 180)");
                                 input.setText(currentConfig.getProperty("AUTO_SHUTDOWN_TIMEOUT_MIN", "120"));
                                 new AlertDialog.Builder(MainActivity.this)
-                                    .setTitle("CUSTOM TIMEOUT")
-                                    .setMessage("Enter sleep duration before power-off in minutes:")
+                                    .setTitle("CUSTOM INACTIVITY TIMEOUT")
                                     .setView(input)
                                     .setPositiveButton("SET", new DialogInterface.OnClickListener() {
                                         @Override
@@ -1125,146 +1440,106 @@ public class MainActivity extends Activity {
                                                 try {
                                                     int m = Integer.parseInt(val);
                                                     if (m > 0) {
-                                                        applyTimeoutValue(String.valueOf(m), tVal, logDrawer);
+                                                        applyTimeoutValue(String.valueOf(m), null, logDrawer);
                                                     }
                                                 } catch (Exception ignored) {}
                                             }
                                         }
                                     })
-                                    .setNegativeButton("CANCEL", null)
-                                    .show();
+                                    .setNegativeButton("CANCEL", null).show();
+                            } else {
+                                applyTimeoutValue(selected, null, logDrawer);
                             }
                         }
-                    }).show();
-            }
-        });
+                    }));
 
-        timeoutRow.addView(tLabel);
-        timeoutRow.addView(tVal);
-        timeoutRow.addView(changeTimer);
-        addSectionContent(timeoutRow);
+                    addShieldRow(shutCard, "Skip shutdown while plugged into charger", "AUTO_SHUTDOWN_SKIP_WHEN_CHARGING", "", "");
+                    addShieldRow(shutCard, "Test Mode (log shutdown decision without rebooting)", "AUTO_SHUTDOWN_DRY_RUN", "", "");
 
-        addToggle("SKIP_WHILE_CHARGING", "AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
-            "Do not power off while a charger is attached (reschedules instead)",
-            false,
-            "", "",
-            ConfigManager.getConfigProbeCmd("AUTO_SHUTDOWN_SKIP_WHEN_CHARGING", "SKIPPING", "ALLOWED"),
-            logDrawer);
-
-        addToggle("SHUTDOWN_TEST_MODE", "AUTO_SHUTDOWN_DRY_RUN",
-            "Log the shutdown decision instead of performing it (safe testing)",
-            false,
-            "", "",
-            ConfigManager.getConfigProbeCmd("AUTO_SHUTDOWN_DRY_RUN", "TEST-ONLY", "LIVE"),
-            logDrawer);
-
-        // ── Section: SUSPEND (Optimization #3) ─────────────────────────────
-        addSectionHeader("SUSPEND",
-            "Reduce suspend failures by blocking alarm wakeups during freeze");
-
-        addToggle("KILL_SHUTDOWN", "KILL_SHUTDOWN_ALARM",
-            "Disable Bigme PowersaveShutDownAlarmReceiver & Intent Firewall block",
-            false,
-            ConfigManager.getKillShutdownAlarmCmd(true),
-            ConfigManager.getKillShutdownAlarmCmd(false),
-            ConfigManager.getBigmeShutdownProbeCmd(),
-            logDrawer);
-
-        addToggle("JS_IDLE", "SUPPRESS_JS_IDLE",
-            "Cancel JobScheduler idle alarms & raise idle threshold to 99",
-            false,
-            ConfigManager.getSuppressJsIdleCmd(true),
-            ConfigManager.getSuppressJsIdleCmd(false),
-            "device_config get jobscheduler min_ready_non_active_jobs_count 2>/dev/null | grep -q 99 && echo THROTTLED || echo DEFAULT",
-            logDrawer);
-
-        addToggle("WIDE_FUZZ", "WIDE_ALARM_FUZZ",
-            "Widen alarm batching: 10min min fuzz, 45min max fuzz, skip TIME_TICK idle",
-            false,
-            ConfigManager.getWideAlarmFuzzCmd(true),
-            ConfigManager.getWideAlarmFuzzCmd(false),
-            "device_config get alarm_manager min_device_idle_fuzz 2>/dev/null | grep -q 600000 && echo WIDE || echo DEFAULT",
-            logDrawer);
-
-        addToggle("INSTANT_LOCK", "INSTANT_LOCK",
-            "Lock screen instantly on power-off (kills DELAYED_KEYGUARD alarm race)",
-            false,
-            ConfigManager.getInstantLockCmd(true),
-            ConfigManager.getInstantLockCmd(false),
-            "settings get secure lock_screen_lock_after_timeout | grep -q 0 && echo INSTANT || echo DELAYED",
-            logDrawer);
-
-        // ── DRY RUN (global): plan-only mode ────────────────────────────────
-        // Deliberately grouped with the SHUTDOWN_TEST_MODE toggle above, which
-        // already established "test mode" as a concept in this app. Unlike that
-        // one, this covers every state-changing action, so APPLY ALL can be
-        // rehearsed in full.
-        addToggle("DRY_RUN", "DRY_RUN",
-            "Plan-only mode: every state-changing action is logged instead of "
-                + "applied, so a whole rule set can be rehearsed safely. Status "
-                + "cards still read the real device state.",
-            false,
-            "", "",
-            ConfigManager.getConfigProbeCmd("DRY_RUN", "NOTHING APPLIED", "LIVE"),
-            logDrawer,
-            new Runnable() {
-                @Override
-                public void run() {
-                    updateDryRunBadge();
+                    addSectionContent(shutCard);
                 }
-            });
+                break;
 
-        // ── APPLY ALL button (with confirmation dialog) ─────────────────────
-        final Button applyBtn = new Button(this);
-        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        alp.setMargins(dpToPx(8), dpToPx(16), dpToPx(8), dpToPx(4));
-        applyBtn.setLayoutParams(alp);
-        applyBtn.setText(">>> APPLY ALL RULES <<<");
-        applyBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 0));
-        applyBtn.setTextColor(Color.WHITE);
-        applyBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(applyBtn, 13);
-        applyBtn.setPadding(0, dpToPx(16), 0, dpToPx(16));
-        applyBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("APPLY ALL RULES?")
-                    .setMessage("Enforce all configured power management policies, CPU governors, and debloat rules via root?")
-                    .setPositiveButton("APPLY", new DialogInterface.OnClickListener() {
+            case 3: // ── DEBLOAT ──
+                addSectionHeader("DEBLOAT", "Freeze background vendor, Google & cellular bloatware");
+
+                addDebloatToggle("GOOGLE_STACK", "GOOGLE_STACK", "GOOGLE_PKGS_SEL",
+                    "Freeze Play Services & GSF (cloud socket wakeups)",
+                    ConfigManager.GOOGLE_PKGS,
+                    "pm list packages -d 2>/dev/null | grep -q com.google.android.gms && echo FROZEN || echo ACTIVE",
+                    logDrawer);
+
+                addDebloatToggle("BIGME_BLOAT", "BIGME_BLOAT", "BIGME_PKGS_SEL",
+                    "Freeze 15 Bigme AI, cloud, store, demo daemons",
+                    ConfigManager.BIGME_PKGS,
+                    "pm list packages -d 2>/dev/null | grep -q com.xrz.ai && echo FROZEN || echo ACTIVE",
+                    logDrawer);
+
+                addDebloatToggle("MTK_CELLULAR", "MTK_CELLULAR", "MTK_PKGS_SEL",
+                    "Disable baseband IMS, telephony, sim services",
+                    ConfigManager.MTK_PKGS,
+                    "pm list packages -d 2>/dev/null | grep -q com.mediatek.ims && echo FROZEN || echo ACTIVE",
+                    logDrawer);
+
+                addDebloatToggle("AOSP_STUBS", "AOSP_STUBS", "AOSP_PKGS_SEL",
+                    "Freeze dialer, telecom, print spooler, MMS provider",
+                    ConfigManager.AOSP_PKGS,
+                    "pm list packages -d 2>/dev/null | grep -q com.android.phone && echo FROZEN || echo ACTIVE",
+                    logDrawer);
+
+                addSectionHeader("BACKGROUND LEASHES", "Restrict apps without freezing them");
+
+                addToggle("LOCKDOWN_GBOARD", "LOCKDOWN_GBOARD",
+                    "Block background jobs, Superpacks sync & wakelocks for Gboard",
+                    false,
+                    "cmd appops set com.google.android.inputmethod.latin RUN_IN_BACKGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin START_FOREGROUND ignore 2>/dev/null; cmd appops set com.google.android.inputmethod.latin WAKE_LOCK ignore 2>/dev/null; cmd jobscheduler cancel com.google.android.inputmethod.latin 2>/dev/null; am set-standby-bucket com.google.android.inputmethod.latin rare 2>/dev/null; dumpsys deviceidle whitelist -com.google.android.inputmethod.latin 2>/dev/null",
+                    "cmd appops set com.google.android.inputmethod.latin RUN_IN_BACKGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin START_FOREGROUND allow 2>/dev/null; cmd appops set com.google.android.inputmethod.latin WAKE_LOCK allow 2>/dev/null; am set-standby-bucket com.google.android.inputmethod.latin active 2>/dev/null",
+                    "cmd appops get com.google.android.inputmethod.latin RUN_ANY_IN_BACKGROUND 2>/dev/null | head -1",
+                    logDrawer);
+
+                addToggle("RESTRICT_GMS", "SUPPRESS_ALARMS",
+                    "Deny GMS exact alarms, background execution & wake locks",
+                    false,
+                    ConfigManager.getSuppressGmsAlarmsCmd(true),
+                    ConfigManager.getSuppressGmsAlarmsCmd(false),
+                    ConfigManager.getSuppressGmsAlarmsProbeCmd(),
+                    logDrawer);
+                break;
+
+            case 4: // ── APPS ──
+                addSectionHeader("APPS", "Essential E-Ink apps installer from GitHub releases");
+                addAppInstallerCards(logDrawer);
+                break;
+        }
+    }
+
+    /** Long-press on header title triggers APPLY ALL RULES. */
+    private void showApplyAllDialog() {
+        new AlertDialog.Builder(this)
+            .setTitle("APPLY ALL RULES?")
+            .setMessage("Enforce all configured power management policies, CPU governors, and debloat rules via root?")
+            .setPositiveButton("APPLY", new DialogInterface.OnClickListener() {
+                @Override
+                public void onClick(DialogInterface d, int which) {
+                    Toast.makeText(MainActivity.this, "Applying all rules...", Toast.LENGTH_SHORT).show();
+                    new Thread(new Runnable() {
                         @Override
-                        public void onClick(DialogInterface d, int which) {
-                            applyBtn.setEnabled(false);
-                            applyBtn.setText("APPLYING...");
-                            new Thread(new Runnable() {
+                        public void run() {
+                            ConfigManager.saveConfig(currentConfig);
+                            new BootReceiver().applyAllRulesPublic(MainActivity.this);
+                            mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    ConfigManager.saveConfig(currentConfig);
-                                    new BootReceiver().applyAllRulesPublic(MainActivity.this);
-                                    final String log = ShellUtils.readLog(15);
-                                    mainHandler.post(new Runnable() {
-                                        @Override
-                                        public void run() {
-                                            applyBtn.setEnabled(true);
-                                            applyBtn.setText(">>> APPLY ALL RULES <<<");
-                                            logDrawer.setText(log);
-                                        }
-                                    });
+                                    updateTelemetryStrip();
+                                    Toast.makeText(MainActivity.this, "All rules applied", Toast.LENGTH_SHORT).show();
                                 }
-                            }).start();
+                            });
                         }
-                    })
-                    .setNegativeButton("CANCEL", null)
-                    .show();
-            }
-        });
-
-        // ── Section: APPS ───────────────────────────────────────────────
-        addSectionHeader("APPS");
-        addAppInstallerCards(logDrawer);
-
-        // ── APPLY ALL (pinned to the very bottom of the SYSTEM tab) ──────
-        addSectionContent(applyBtn);
+                    }).start();
+                }
+            })
+            .setNegativeButton("CANCEL", null)
+            .show();
     }
 
     // ── DRY RUN banner marker ──────────────────────────────────────────────
@@ -1608,11 +1883,15 @@ public class MainActivity extends Activity {
     private LinearLayout sectionTarget;
 
     private void addSectionHeader(String text) {
-        addSectionHeader(text, null);
+        addSectionHeader(text, null, true);
+    }
+
+    private void addSectionHeader(String text, String subtitle) {
+        addSectionHeader(text, subtitle, true);
     }
 
     // Adds a collapsible section header and routes subsequent addSectionContent calls into its body.
-    private void addSectionHeader(String text, String subtitle) {
+    private void addSectionHeader(String text, String subtitle, boolean expandedByDefault) {
         View bar = new View(this);
         bar.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(4)));
         bar.setBackgroundColor(Color.BLACK);
@@ -1633,7 +1912,7 @@ public class MainActivity extends Activity {
         headerRow.addView(tv);
 
         final TextView chevron = new TextView(this);
-        chevron.setText("[ - ]");
+        chevron.setText(expandedByDefault ? "[ - ]" : "[ + ]");
         setSp(chevron, 12);
         chevron.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         chevron.setTextColor(Color.WHITE);
@@ -1644,6 +1923,7 @@ public class MainActivity extends Activity {
 
         final LinearLayout bodyWrap = new LinearLayout(this);
         bodyWrap.setOrientation(LinearLayout.VERTICAL);
+        bodyWrap.setVisibility(expandedByDefault ? View.VISIBLE : View.GONE);
         bodyWrap.addView(body);
 
         headerRow.setOnClickListener(new View.OnClickListener() {
@@ -1845,21 +2125,32 @@ public class MainActivity extends Activity {
 
     private void updatePillView(TextView pillBtn, boolean isOn) {
         if (isOn) {
-            pillBtn.setText("[  ON  ]");
-            pillBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+            pillBtn.setText("[ ● ON ]");
+            pillBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, dpToPx(2)));
             pillBtn.setTextColor(Color.WHITE);
         } else {
-            pillBtn.setText("[ OFF ]");
-            pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+            pillBtn.setText("[ ○ OFF ]");
+            pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
             pillBtn.setTextColor(Color.BLACK);
         }
     }
 
-    // ── addSensorsControlCard: Master toggle + modular individual sensor controls ──
+    private void updateDebloatPillView(TextView pillBtn, boolean isFrozen) {
+        if (isFrozen) {
+            pillBtn.setText("[ ● FROZEN ]");
+            pillBtn.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, dpToPx(2)));
+            pillBtn.setTextColor(Color.WHITE);
+        } else {
+            pillBtn.setText("[ ○ ACTIVE ]");
+            pillBtn.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
+            pillBtn.setTextColor(Color.BLACK);
+        }
+    }
+
+    // ── addSensorsControlCard: Master toggle + permanently unfolded individual sensor controls ──
     private void addSensorsControlCard(final TextView logDrawer) {
         final ConfigManager.SensorItem[] sensors = ConfigManager.SENSORS;
-        final CheckBox[] checkBoxes = new CheckBox[sensors.length];
-        final TextView[] markers = new TextView[sensors.length];
+        final TextView[] sensorPills = new TextView[sensors.length];
 
         // Main card
         final LinearLayout card = new LinearLayout(this);
@@ -1895,75 +2186,41 @@ public class MainActivity extends Activity {
 
         // Description
         TextView tDesc = new TextView(this);
-        tDesc.setText("Mute background sensor polling (Auto-rotate, Face-down, Ambient light, Tilt wake, Proximity, Fuel gauge). Saves battery during active use.");
-        setSp(tDesc, 11);
+        tDesc.setText("Disconnect sensor listeners so hardware silicon drops to 0.001mA sleep");
+        setSp(tDesc, 10);
         tDesc.setTypeface(Typeface.DEFAULT);
         tDesc.setTextColor(Color.BLACK);
-        tDesc.setPadding(0, dpToPx(6), 0, dpToPx(4));
+        tDesc.setPadding(0, dpToPx(4), 0, dpToPx(6));
         card.addView(tDesc);
 
-        // Summary + Action Buttons Row
+        // Action row: Summary + MUTE ALL / RESTORE button
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setGravity(Gravity.CENTER_VERTICAL);
-        actionRow.setPadding(0, dpToPx(4), 0, 0);
+        actionRow.setPadding(0, dpToPx(2), 0, dpToPx(8));
 
         final TextView summaryLabel = new TextView(this);
         summaryLabel.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         setSp(summaryLabel, 10);
         summaryLabel.setTextColor(Color.BLACK);
-        LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        summaryLabel.setLayoutParams(sumLp);
+        summaryLabel.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
         actionRow.addView(summaryLabel);
 
         final Button muteAllBtn = new Button(this);
         setSp(muteAllBtn, 10);
         muteAllBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         styleEinkButton(muteAllBtn, true);
-        muteAllBtn.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
-        muteAllBtn.setMinimumHeight(0);
-        muteAllBtn.setMinimumWidth(0);
-        muteAllBtn.setMinWidth(0);
-        muteAllBtn.setMinHeight(0);
-        LinearLayout.LayoutParams mblp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mblp.setMarginEnd(dpToPx(6));
-        muteAllBtn.setLayoutParams(mblp);
+        muteAllBtn.setPadding(dpToPx(12), dpToPx(6), dpToPx(12), dpToPx(6));
+        muteAllBtn.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         actionRow.addView(muteAllBtn);
 
-        final Button toggleExpandBtn = new Button(this);
-        toggleExpandBtn.setText("[SELECT SENSORS ▼]");
-        setSp(toggleExpandBtn, 10);
-        toggleExpandBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        styleEinkButton(toggleExpandBtn, false);
-        toggleExpandBtn.setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4));
-        toggleExpandBtn.setMinimumHeight(0);
-        toggleExpandBtn.setMinimumWidth(0);
-        toggleExpandBtn.setMinWidth(0);
-        toggleExpandBtn.setMinHeight(0);
-        actionRow.addView(toggleExpandBtn);
-
         card.addView(actionRow);
-        addSectionContent(card);
 
-        // Collapsible Dropdown / Selector Panel
-        final LinearLayout selectorPanel = new LinearLayout(this);
-        selectorPanel.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        splp.setMargins(dpToPx(8), 0, dpToPx(8), dpToPx(4));
-        selectorPanel.setLayoutParams(splp);
-        selectorPanel.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 0));
-        selectorPanel.setPadding(dpToPx(12), dpToPx(8), dpToPx(12), dpToPx(8));
-        selectorPanel.setVisibility(View.GONE);
-
-        // Header inside panel
-        TextView panelHeader = new TextView(this);
-        panelHeader.setText("INDIVIDUAL SENSOR CONTROLS");
-        panelHeader.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        setSp(panelHeader, 11);
-        panelHeader.setTextColor(Color.BLACK);
-        panelHeader.setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(6));
-        selectorPanel.addView(panelHeader);
+        // Divider
+        View div = new View(this);
+        div.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1)));
+        div.setBackgroundColor(Color.LTGRAY);
+        card.addView(div);
 
         // Helper to update overall UI state
         final Runnable updateUiState = new Runnable() {
@@ -1971,89 +2228,89 @@ public class MainActivity extends Activity {
             public void run() {
                 int activeCount = 0;
                 for (int i = 0; i < sensors.length; i++) {
-                    if ("1".equals(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal))) {
-                        activeCount++;
-                    }
+                    boolean act = "1".equals(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal));
+                    if (act) activeCount++;
+                    if (sensorPills[i] != null) updatePillView(sensorPills[i], act);
                 }
                 if (activeCount == 0) {
-                    masterPill.setText("[ ALL MUTED ]");
-                    masterPill.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, 2));
+                    masterPill.setText("[ ● ALL MUTED ]");
+                    masterPill.setBackground(createEinkDrawable(Color.BLACK, Color.BLACK, 0, dpToPx(2)));
                     masterPill.setTextColor(Color.WHITE);
-                    muteAllBtn.setText("RESTORE");
-                    summaryLabel.setText("0/6 active (Max Savings)");
+                    muteAllBtn.setText("RESTORE DEFAULTS");
+                    summaryLabel.setText("0/6 active (Silicon Asleep)");
                 } else if (activeCount == sensors.length) {
-                    masterPill.setText("[ ALL ACTIVE ]");
-                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+                    masterPill.setText("[ ○ ALL ACTIVE ]");
+                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
                     masterPill.setTextColor(Color.BLACK);
-                    muteAllBtn.setText("MUTE ALL");
+                    muteAllBtn.setText("MUTE ALL SENSORS");
                     summaryLabel.setText("6/6 active (Stock)");
                 } else {
                     masterPill.setText("[ " + activeCount + "/6 ACTIVE ]");
-                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 2, 2));
+                    masterPill.setBackground(createEinkDrawable(Color.WHITE, Color.BLACK, 1, dpToPx(2)));
                     masterPill.setTextColor(Color.BLACK);
-                    muteAllBtn.setText("MUTE ALL");
+                    muteAllBtn.setText("MUTE ALL SENSORS");
                     summaryLabel.setText(activeCount + "/6 active (Custom)");
                 }
+                updateTelemetryStrip();
             }
         };
 
-        // Populate sensor rows in panel
+        // Populate permanently unfolded individual sensor rows
         for (int i = 0; i < sensors.length; i++) {
             final int idx = i;
             final ConfigManager.SensorItem item = sensors[i];
-            final boolean active = "1".equals(currentConfig.getProperty(item.key, item.defaultVal));
 
             LinearLayout itemRow = new LinearLayout(this);
-            itemRow.setOrientation(LinearLayout.VERTICAL);
-            itemRow.setPadding(dpToPx(4), dpToPx(4), dpToPx(4), dpToPx(6));
+            itemRow.setOrientation(LinearLayout.HORIZONTAL);
+            itemRow.setGravity(Gravity.CENTER_VERTICAL);
+            itemRow.setPadding(0, dpToPx(6), 0, dpToPx(6));
 
-            LinearLayout headerRow = new LinearLayout(this);
-            headerRow.setOrientation(LinearLayout.HORIZONTAL);
-            headerRow.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout infoCol = new LinearLayout(this);
+            infoCol.setOrientation(LinearLayout.VERTICAL);
+            infoCol.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            infoCol.setPadding(0, 0, dpToPx(6), 0);
 
-            final TextView marker = new TextView(this);
-            markers[idx] = marker;
-            marker.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(marker, 11);
-            marker.setPadding(dpToPx(4), 0, dpToPx(4), 0);
-            marker.setText(active ? "[X]" : "[ ]");
-            marker.setTextColor(Color.BLACK);
-
-            final CheckBox cb = new CheckBox(this);
-            checkBoxes[idx] = cb;
-            cb.setText(item.title);
-            cb.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-            setSp(cb, 10);
-            cb.setTextColor(Color.BLACK);
-            cb.setButtonDrawable(null);
-            cb.setBackground(null);
-            cb.setChecked(active);
-
-            headerRow.addView(marker);
-            headerRow.addView(cb);
-            itemRow.addView(headerRow);
+            TextView titleView = new TextView(this);
+            titleView.setText(item.title);
+            titleView.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(titleView, 11);
+            titleView.setTextColor(Color.BLACK);
+            infoCol.addView(titleView);
 
             TextView descView = new TextView(this);
             descView.setText(item.desc);
             setSp(descView, 9);
-            descView.setTextColor(Color.BLACK);
-            descView.setPadding(dpToPx(24), 0, dpToPx(4), dpToPx(2));
-            itemRow.addView(descView);
+            descView.setTextColor(Color.GRAY);
+            infoCol.addView(descView);
 
-            cb.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            itemRow.addView(infoCol);
+
+            final TextView rowPill = new TextView(this);
+            rowPill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            setSp(rowPill, 10);
+            rowPill.setGravity(Gravity.CENTER);
+            rowPill.setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4));
+            sensorPills[idx] = rowPill;
+
+            boolean initialActive = "1".equals(currentConfig.getProperty(item.key, item.defaultVal));
+            updatePillView(rowPill, initialActive);
+            itemRow.addView(rowPill);
+
+            final Runnable toggleRow = new Runnable() {
                 @Override
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    marker.setText(isChecked ? "[X]" : "[ ]");
-                    currentConfig.setProperty(item.key, isChecked ? "1" : "0");
+                public void run() {
+                    boolean cur = "1".equals(currentConfig.getProperty(item.key, item.defaultVal));
+                    boolean next = !cur;
+                    currentConfig.setProperty(item.key, next ? "1" : "0");
                     ConfigManager.saveConfig(currentConfig);
                     updateUiState.run();
 
-                    final String cmd = ConfigManager.getSensorApplyCmd(item.key, isChecked);
+                    final String cmd = ConfigManager.getSensorApplyCmd(item.key, next);
                     new Thread(new Runnable() {
                         @Override
                         public void run() {
                             ShellUtils.execRootAction(cmd);
-                            ShellUtils.appendLog("Sensor " + item.title + " set to " + (isChecked ? "ENABLED" : "DISABLED"));
+                            ShellUtils.appendLog("Sensor " + item.title + " set to " + (next ? "ENABLED" : "DISABLED"));
                             mainHandler.post(new Runnable() {
                                 @Override
                                 public void run() {
@@ -2065,16 +2322,25 @@ public class MainActivity extends Activity {
                         }
                     }).start();
                 }
-            });
+            };
 
-            headerRow.setOnClickListener(new View.OnClickListener() {
+            itemRow.setOnClickListener(new View.OnClickListener() {
                 @Override
-                public void onClick(View v) {
-                    cb.toggle();
-                }
+                public void onClick(View v) { toggleRow.run(); }
+            });
+            rowPill.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) { toggleRow.run(); }
             });
 
-            selectorPanel.addView(itemRow);
+            card.addView(itemRow);
+
+            if (i < sensors.length - 1) {
+                View sep = new View(this);
+                sep.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1));
+                sep.setBackgroundColor(Color.LTGRAY);
+                card.addView(sep);
+            }
         }
 
         // Master Pill and MUTE ALL button action
@@ -2089,24 +2355,20 @@ public class MainActivity extends Activity {
                 }
                 final boolean doMute = (activeCount > 0);
                 if (doMute) {
-                    // Save previous state string: e.g. "1,0,1,0,0,1"
                     StringBuilder prevSb = new StringBuilder();
                     for (int i = 0; i < sensors.length; i++) {
                         if (i > 0) prevSb.append(",");
                         prevSb.append(currentConfig.getProperty(sensors[i].key, sensors[i].defaultVal));
                         currentConfig.setProperty(sensors[i].key, "0");
-                        if (checkBoxes[i] != null) checkBoxes[i].setChecked(false);
                     }
                     currentConfig.setProperty("SENSOR_PREV_STATE", prevSb.toString());
                     currentConfig.setProperty("SENSOR_ALL_MUTE", "1");
                 } else {
-                    // Restore previous state
                     String prev = currentConfig.getProperty("SENSOR_PREV_STATE", "");
                     String[] parts = (prev != null && !prev.isEmpty()) ? prev.split(",") : new String[0];
                     for (int i = 0; i < sensors.length; i++) {
                         String restoredVal = (i < parts.length && !parts[i].isEmpty()) ? parts[i] : "1";
                         currentConfig.setProperty(sensors[i].key, restoredVal);
-                        if (checkBoxes[i] != null) checkBoxes[i].setChecked("1".equals(restoredVal));
                     }
                     currentConfig.setProperty("SENSOR_ALL_MUTE", "0");
                 }
@@ -2135,22 +2397,7 @@ public class MainActivity extends Activity {
         masterPill.setOnClickListener(masterToggleListener);
         muteAllBtn.setOnClickListener(masterToggleListener);
 
-        toggleExpandBtn.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (selectorPanel.getVisibility() == View.VISIBLE) {
-                    selectorPanel.setVisibility(View.GONE);
-                    toggleExpandBtn.setText("[SELECT SENSORS ▼]");
-                    styleEinkButton(toggleExpandBtn, false);
-                } else {
-                    selectorPanel.setVisibility(View.VISIBLE);
-                    toggleExpandBtn.setText("[HIDE SENSORS ▲]");
-                    styleEinkButton(toggleExpandBtn, true);
-                }
-            }
-        });
-
-        addSectionContent(selectorPanel);
+        addSectionContent(card);
         updateUiState.run();
     }
 
@@ -2209,7 +2456,7 @@ public class MainActivity extends Activity {
         setSp(pillBtn, 12);
         pillBtn.setGravity(Gravity.CENTER);
         pillBtn.setPadding(dpToPx(14), dpToPx(6), dpToPx(14), dpToPx(6));
-        updatePillView(pillBtn, initialOn);
+        updateDebloatPillView(pillBtn, initialOn);
 
         topRow.addView(tTitle);
         topRow.addView(pillBtn);
@@ -2386,7 +2633,7 @@ public class MainActivity extends Activity {
                 final String newVal = newChecked ? "0" : "1";
                 currentConfig.setProperty(configKey, newVal);
                 ConfigManager.saveConfig(currentConfig);
-                updatePillView(pillBtn, newChecked);
+                updateDebloatPillView(pillBtn, newChecked);
 
                 if (newChecked) {
                     // FREEZE: only freeze checked packages

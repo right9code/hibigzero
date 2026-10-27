@@ -183,6 +183,11 @@ public class BootReceiver extends BroadcastReceiver {
             ShellUtils.execRootAction(ConfigManager.getCpuUncapCmd());
         }
 
+        // 10c. Touch Boost Saver (prevent 2GHz frequency spikes during page turns)
+        if ("1".equals(cfg.getProperty("TOUCH_BOOST_SAVER"))) {
+            ShellUtils.execRootAction(ConfigManager.getTouchBoostSaverCmd(true));
+        }
+
         // 11. Sleep Governor Service (screen-off CPU frequency scaling)
         if ("1".equals(cfg.getProperty("SLEEP_GOVERNOR_ENABLED", "1"))) {
             HiBigApp.registerScreenReceiver();

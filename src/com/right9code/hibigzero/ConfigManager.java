@@ -28,6 +28,7 @@ public class ConfigManager {
         "AUTO_SHUTDOWN_ENABLED","AUTO_SHUTDOWN_TIMEOUT_MIN","AUTO_SHUTDOWN_SKIP_WHEN_CHARGING",
         "AUTO_SHUTDOWN_DRY_RUN","DISABLE_ANIMATIONS",
         "KILL_SHUTDOWN_ALARM","SUPPRESS_JS_IDLE","WIDE_ALARM_FUZZ","INSTANT_LOCK",
+        "INSTANT_DEEP_DOZE","TOUCH_BOOST_SAVER",
         "GOOGLE_PKGS_SEL","BIGME_PKGS_SEL","MTK_PKGS_SEL","AOSP_PKGS_SEL","DRY_RUN",
         "RULES_SUSPENDED"
     };
@@ -1240,6 +1241,31 @@ public class ConfigManager {
             sb.append("device_config delete device_idle ").append(k).append(" 2>/dev/null; ");
         }
         return sb.toString();
+    }
+
+    public static String getTouchBoostSaverCmd(boolean enable) {
+        if (enable) {
+            return "chmod 666 /proc/perfmgr/boost_ctrl/eas_ctrl/perf_*uclamp* 2>/dev/null; " +
+                "echo 0 > /proc/perfmgr/boost_ctrl/eas_ctrl/perf_uclamp_min 2>/dev/null; " +
+                "echo 0 > /proc/perfmgr/boost_ctrl/eas_ctrl/perf_ta_uclamp_min 2>/dev/null; " +
+                "echo 0 > /proc/perfmgr/boost_ctrl/eas_ctrl/perf_fg_uclamp_min 2>/dev/null; " +
+                "chmod 666 /sys/devices/system/cpu/cpufreq/schedutil/*rate_limit_us 2>/dev/null; " +
+                "echo 100000 > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null; " +
+                "echo 5000 > /sys/devices/system/cpu/cpufreq/schedutil/down_rate_limit_us 2>/dev/null; " +
+                "setprop vendor.powerhal.smart.powersave 1 2>/dev/null";
+        } else {
+            return "chmod 666 /sys/devices/system/cpu/cpufreq/schedutil/*rate_limit_us 2>/dev/null; " +
+                "echo 80000 > /sys/devices/system/cpu/cpufreq/schedutil/up_rate_limit_us 2>/dev/null; " +
+                "echo 5000 > /sys/devices/system/cpu/cpufreq/schedutil/down_rate_limit_us 2>/dev/null";
+        }
+    }
+
+    public static String getInstantDeepDozeCmd(boolean enable) {
+        if (enable) {
+            return "cmd deviceidle force-idle 2>/dev/null";
+        } else {
+            return "cmd deviceidle unforce 2>/dev/null";
+        }
     }
 
     public static String getBucketLabel(int bucket) {

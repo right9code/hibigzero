@@ -111,6 +111,10 @@ public class AppInstaller {
             // which defeats the point of a managed install. Same pattern as the
             // storage appops granted to KOReader / Obsidian / MiXplorer.
             "cmd appops set dev.imranr.obtainium REQUEST_INSTALL_PACKAGES allow"),
+        new AppDef("tailscale", "Tailscale", "tailscale/tailscale-android",
+            "tailscale-android-universal-.*\\.apk",
+            false, "com.tailscale.ipn",
+            "Mesh VPN for secure device networking"),
     };
 
     // ── API response cache (5 min TTL) ──────────────────────────────────

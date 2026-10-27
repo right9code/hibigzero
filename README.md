@@ -18,19 +18,22 @@ Stock Bigme firmware suffers from severe active and standby battery drain caused
 
 HiBig Zero ships with an E-ink native, strictly 1-bit monochrome interface:
 
-* **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale instead of a hardcoded width-based scaler.
-* **Density-independent layout** — all padding, margins, and dividers use dp, so the UI scales correctly across screen densities.
-* **Compact responsive banner** — a two-line status strip showing the app name, version (`v1.5.0`), and author (`by right9code`).
+* **Sub-tab navigation** — the SYSTEM tab is organized into 5 instant-switch sub-tabs (`READING`, `SENSORS`, `STANDBY`, `DEBLOAT`, `APPS`) replacing the old 10-screen vertical scroll.
+* **Header telemetry strip** — a live status row in the header showing CPU cores + frequency, Doze state, active sensor count, and battery % with real PMIC mA current. Tap to refresh; event-driven with zero background polling cost.
+* **Stepper chips** — inline 1-tap selection chips for Wake/Sleep CPU governor, Doze speed, charge ceiling, and auto-shutdown timeout. No modal popups.
+* **Hybrid 2 pill badges** — `[ ● ON ]` / `[ ○ OFF ]` for toggles and `[ ● FROZEN ]` / `[ ○ ACTIVE ]` for debloat categories with unambiguous solid/dashed styling.
+* **Long-press APPLY ALL** — long-press the header title to enforce all configured rules via root (zero screen real estate cost).
+* **Responsive typography** — every label uses Android sp text sizing and the system typeface, so text follows the device font scale.
+* **Density-independent layout** — all padding, margins, and dividers use dp for correct scaling across screen densities.
+* **Compact responsive banner** — status strip showing app name, version, and author (`by right9code`).
 * **UPDATE button** — one-tap GitHub release checker with in-app download, progress, and self-install.
-* **Clean tab bar** — tabs are visually separated from the banner and from each other, use fixed labels, and mark the active tab with an underline indicator instead of a `>>` prefix.
-* **Collapsible sections** — every section header (`HARDWARE`, `DEBLOAT`, `NETWORK`, `POWER`, `PACKAGE MANAGER`, and the Battery sections) can be tapped to collapse or expand its body.
-* **Package Manager clarity** — the second tab is now `PACKAGE MANAGER` with a `FREEZE, UNFREEZE, OR RESTRICT` description. Each app row shows the name, package, and a plain-language status line (`Not frozen | background: allowed | doze optimized | usage: ...`) with `FREEZE`/`UNFREEZE` and `OPTIONS` stacked on the right.
-* **Filter and sort dropdowns** — the six cryptic filter chips (`RSTR`, `PROT`) were replaced by a single `FILTER:` selector with readable options, alongside the existing `SORT:` selector.
-* **Dry run (plan-only mode)** — a global switch that logs every state-changing action instead of applying it, so a whole rule set can be rehearsed safely. Status cards keep reading the real device state, and the banner shows `[ DRY RUN - NOTHING APPLIED ]` whenever it is on. Per-feature dry runs (`SHUTDOWN_TEST_MODE`) still exist.
-* **Charge ceiling** — holds the battery at a configurable target (default `80%`, resume `75%`) by switching the MediaTek charge input off and on, so a phone that lives on a charger is not held at 100% all night. It polls only while plugged in, and charging is restored the moment the cable comes out, whenever the feature is switched off, and at boot — a stuck "off" switch would mean a phone that never charges, so every failure path resumes rather than stops.
-* **Removed non-essential controls** — `PAGE UP`/`PAGE DOWN` and the bulk `FREEZE ALL`/`UNFREEZE ALL`/`RESTRICT USR` shortcuts were removed; per-app actions remain in each row.
-* **Strict 1-bit monochrome styling** — all buttons, the search field, and the tab bar use explicit black/white bordered drawables, eliminating the system grey Material backgrounds.
-* **E-ink friendly glyphs** — emoji and pictographs in menus and buttons were replaced with ASCII-safe labels for predictable rendering.
+* **Collapsible sections** — every section header can be tapped to collapse or expand its body.
+* **Suspend & Alarm Shield** — unified card with master toggle and 4 checkboxes for shutdown timer kill, alarm batching, JobScheduler throttling, and instant keyguard lock.
+* **Keys & Gestures card** — dual-shortcut card with `[ CUSTOM KEYS ]` and `[ GESTURE SETTINGS ]` buttons that open Bigme's configuration screens directly (disabled when launcher is frozen).
+* **Charge ceiling** — 5 inline chips (`75%`, `80%`, `85%`, `90%`, `CUSTOM`) with live status line showing switch state.
+* **Auto-shutdown card** — master pill toggle with 5 timeout chips (`1H`, `2H`, `4H`, `8H`, `CUSTOM`) plus checkboxes for skip-while-charging and test mode.
+* **Strict 1-bit monochrome styling** — all buttons, the search field, and the tab bar use explicit black/white bordered drawables.
+* **E-ink friendly glyphs** — emoji and pictographs in menus and buttons were replaced with ASCII-safe labels.
 
 ---
 
@@ -49,6 +52,7 @@ HiBig Zero includes a built-in **App Installer** that downloads, installs, and m
 | **MiXplorer** | [driftywinds/mixplorer-releases](https://github.com/driftywinds/mixplorer-releases) | User app |
 | **LocalSend** | [localsend/localsend](https://github.com/localsend/localsend) | User app |
 | **Obtainium** | [ImranR98/Obtainium](https://github.com/ImranR98/Obtainium) | User app |
+| **Tailscale** | [tailscale/tailscale-android](https://github.com/tailscale/tailscale-android) | User app |
 
 ### Features
 * **Resume & retry** — downloads resume from where they left off if the connection drops, with 3 retries and exponential backoff.
@@ -343,11 +347,11 @@ If your Bigme HiBreak is not yet rooted, follow the comprehensive step-by-step g
 ### Steps
 1. Download the latest APK from [Releases](https://github.com/right9code/hibigzero/releases/latest):
    ```sh
-   HiBigZero-v1.5.0-release.apk
+   HiBigZero-v1.5.1-release.apk
    ```
 2. Install via ADB:
    ```sh
-   adb install -r HiBigZero-v1.5.0-release.apk
+   adb install -r HiBigZero-v1.5.1-release.apk
    ```
 3. Open **HiBig Zero** on your device and grant Root (Superuser) permissions when prompted by Magisk.
 4. Tweak your desired toggles or switch to **E-Reader Mode** on Tab 1.

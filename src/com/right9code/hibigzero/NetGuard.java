@@ -24,12 +24,13 @@ public final class NetGuard {
 
     private static final int MAX_REDIRECTS = 5;
 
-    /** github.com serves the release page; the asset CDN is *.githubusercontent.com. */
+    /** github.com serves the release page; the asset CDN is *.githubusercontent.com; whatsapp.com serves WhatsApp.apk */
     public static boolean isAllowedHost(String host) {
         if (host == null) return false;
         host = host.toLowerCase(Locale.US);
         return host.equals("github.com") || host.endsWith(".github.com")
-            || host.equals("githubusercontent.com") || host.endsWith(".githubusercontent.com");
+            || host.equals("githubusercontent.com") || host.endsWith(".githubusercontent.com")
+            || host.equals("whatsapp.com") || host.endsWith(".whatsapp.com");
     }
 
     /**
